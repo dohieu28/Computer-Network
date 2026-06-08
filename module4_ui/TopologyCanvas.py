@@ -14,7 +14,6 @@ class TopologyCanvas(QWidget):
 
         self.setMinimumHeight(320)
 
-        # Chỉ là dữ liệu để hiển thị, không phải topology thật
         self.nodes = []
         self.links = []
 
@@ -32,10 +31,6 @@ class TopologyCanvas(QWidget):
         self.timer.timeout.connect(self.update_animation)
 
     def set_topology(self, nodes, links):
-        """
-        Nhận dữ liệu từ TopologyManager của Module 1 rồi vẽ.
-        """
-
         self.nodes = self.normalize_nodes(nodes)
         self.links = self.normalize_links(links)
 
@@ -43,7 +38,7 @@ class TopologyCanvas(QWidget):
             if node_id not in self.node_positions:
                 self.node_positions[node_id] = (
                     random.randint(120, 750),
-                    random.randint(80, 260)
+                    random.randint(80, 260),
                 )
 
             if node_id not in self.node_status:
@@ -118,7 +113,7 @@ class TopologyCanvas(QWidget):
                         "source": source,
                         "target": target,
                         "status": status,
-                        "cost": cost
+                        "cost": cost,
                     }
                 )
 
@@ -170,12 +165,6 @@ class TopologyCanvas(QWidget):
         return True
 
     def animate_path(self, path):
-        """
-        Chuẩn bị cho Module RIP/OSPF.
-        Sau này Module 2/3 có thể gửi:
-            ["R1", "R2", "R3", "R5"]
-        """
-
         if not path or len(path) < 2:
             return False
 
@@ -198,7 +187,6 @@ class TopologyCanvas(QWidget):
         self.node_status.clear()
 
         self.dragging_node = None
-
         self.animating = False
         self.packet_source = None
         self.packet_destination = None
@@ -297,7 +285,7 @@ class TopologyCanvas(QWidget):
             painter.drawText(
                 mid_x + 5,
                 mid_y - 5,
-                f"{link['status']} / cost={link['cost']}"
+                f"{link['status']} / cost={link['cost']}",
             )
 
         if self.animating:
@@ -314,12 +302,6 @@ class TopologyCanvas(QWidget):
         painter.setPen(QPen(Qt.black, 2))
 
         for node_id, (x, y) in self.node_positions.items():
-            status = self.node_status.get(node_id, "Running")
-
-            if status == "Running":
-                painter.setBrush(QBrush(Qt.white))
-            else:
-                painter.setBrush(QBrush(Qt.lightGray))
-
+            painter.setBrush(QBrush(Qt.white))
             painter.drawEllipse(x - 25, y - 25, 50, 50)
             painter.drawText(x - 10, y + 5, node_id)

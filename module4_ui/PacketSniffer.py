@@ -2,10 +2,12 @@ from datetime import datetime
 
 
 class PacketSniffer:
-    def __init__(self):
+    def __init__(self, signals=None):
         self.captured_packets = []
+        self.signals = signals
+        self.packet_no = 0
 
-    def analyze_packet(self, raw_data, source, destination):
+    def analyze_packet(self, raw_data, source="Unknown", destination="Unknown"):
         if isinstance(raw_data, str):
             raw_data = raw_data.encode()
 
@@ -22,27 +24,64 @@ class PacketSniffer:
         else:
             protocol = "UNKNOWN"
 
+        self.packet_no += 1
+
         packet_info = {
+            "no": self.packet_no,
             "time": datetime.now().strftime("%H:%M:%S"),
             "source": source,
             "destination": destination,
             "protocol": protocol,
             "length": len(raw_data),
-            "raw_bytes": raw_data
+            "info": f"{source} -> {destination}, length={len(raw_data)}",
+            "raw_bytes": raw_data,
         }
 
         self.captured_packets.append(packet_info)
+
+        if self.signals is not None:
+            try:
+                self.signals.packet_captured.emit(packet_info)
+            except Exception:
+                pass
+
         return packet_info
 
-    def capture_from_link(self, raw_bytes, src_interface, dst_interface, link):
-        """
-        Hàm này khớp với Module 1 Link.register_sniffer(callback).
+    def analyze_bytes(self, raw_data, source="Unknown", destination="Unknown"):
+        return self.analyze_packet(raw_data, source, destination)
 
-        Module 1 gọi:
-            callback(raw_bytes, src_interface, dst_interface, link)
+    def capture_from_link(
+        self,
+        raw_bytes,
+        src_interface=None,
+        dst_interface=None,
+        link=None
+    ):
+        """
+        Dùng để đăng ký với Link.register_sniffer(callback).
+
+        Hỗ trợ cả 2 kiểu:
+        1. callback(raw_bytes)
+        2. callback(raw_bytes, src_interface, dst_interface, link)
         """
 
-        source = getattr(src_interface, "ip_address", "Unknown")
-        destination = getattr(dst_interface, "ip_address", "Unknown")
+        source = "Unknown"
+        destination = "Unknown"
+
+        if src_interface is not None:
+            source = (
+                getattr(src_interface, "ip", None)
+                or getattr(src_interface, "ip_address", None)
+                or getattr(src_interface, "name", None)
+                or "Unknown"
+            )
+
+        if dst_interface is not None:
+            destination = (
+                getattr(dst_interface, "ip", None)
+                or getattr(dst_interface, "ip_address", None)
+                or getattr(dst_interface, "name", None)
+                or "Unknown"
+            )
 
         return self.analyze_packet(raw_bytes, source, destination)
