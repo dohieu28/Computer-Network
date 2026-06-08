@@ -1,5 +1,8 @@
-from gui.topology_canvas import TopologyCanvas
-from gui.packet_sniffer import PacketSniffer
+from module4_ui.TopologyCanvas import TopologyCanvas
+from module4_ui.PacketSniffer import PacketSniffer
+from module4_ui.RouterSignal import RouterSignal
+import time
+from PyQt5 import QtGui
 
 from PyQt5.QtWidgets import (
     QMainWindow,
@@ -24,11 +27,15 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.signals = RouterSignal()
+        self.signals.router_updated.connect(self.update_routing_table)
+        self.signals.packet_captured.connect(self.update_sniffer_ui)
+
         self.setWindowTitle("OSPF/RIP Network Emulator")
         self.resize(1200, 850)
 
         self.canvas = TopologyCanvas()
-        self.sniffer = PacketSniffer()
+        self.sniffer = PacketSniffer(self.signals)
 
         self.btn_add_router = QPushButton("Add Router")
         self.btn_add_link = QPushButton("Add Link")
@@ -54,9 +61,11 @@ class MainWindow(QMainWindow):
 
         self.sniffer_table = QTableWidget()
         self.sniffer_table.setColumnCount(5)
+        # self.sniffer_table.setHorizontalHeaderLabels(
+        #     ["Time", "Source", "Destination", "Protocol", "Length"]
+        # )
         self.sniffer_table.setHorizontalHeaderLabels(
-            ["Time", "Source", "Destination", "Protocol", "Length"]
-        )
+            ["no", "protocol", "info"])
 
         self.btn_add_router.clicked.connect(self.add_router_demo)
         self.btn_add_link.clicked.connect(self.add_link_selected)
@@ -163,7 +172,8 @@ class MainWindow(QMainWindow):
             return
 
         if router_a == router_b:
-            QMessageBox.warning(self, "Warning", "Router A and B must be different.")
+            QMessageBox.warning(
+                self, "Warning", "Router A and B must be different.")
             return
 
         if not self.canvas.add_link(router_a, router_b):
@@ -205,7 +215,8 @@ class MainWindow(QMainWindow):
             return
 
         if not self.canvas.rename_router(old_name, new_name):
-            QMessageBox.warning(self, "Warning", "Invalid name or name already exists.")
+            QMessageBox.warning(
+                self, "Warning", "Invalid name or name already exists.")
             return
 
         self.sync_router_combo()
@@ -236,7 +247,8 @@ class MainWindow(QMainWindow):
             return
 
         if router_a == router_b:
-            QMessageBox.warning(self, "Warning", "Router A and B must be different.")
+            QMessageBox.warning(
+                self, "Warning", "Router A and B must be different.")
             return
 
         if not self.canvas.animate_packet(router_a, router_b):
@@ -253,7 +265,7 @@ class MainWindow(QMainWindow):
         self.routing_table.setItem(0, 2, QTableWidgetItem("1"))
         self.routing_table.setItem(0, 3, QTableWidgetItem("eth0"))
 
-        packet_info = self.sniffer.analyze_packet(
+        packet_info = self.sniffer.analyze_bytes(
             "RIP UPDATE PACKET",
             router_a,
             router_b
@@ -262,11 +274,16 @@ class MainWindow(QMainWindow):
         row = self.sniffer_table.rowCount()
         self.sniffer_table.insertRow(row)
 
-        self.sniffer_table.setItem(row, 0, QTableWidgetItem(packet_info["time"]))
-        self.sniffer_table.setItem(row, 1, QTableWidgetItem(packet_info["source"]))
-        self.sniffer_table.setItem(row, 2, QTableWidgetItem(packet_info["destination"]))
-        self.sniffer_table.setItem(row, 3, QTableWidgetItem(packet_info["protocol"]))
-        self.sniffer_table.setItem(row, 4, QTableWidgetItem(str(packet_info["length"])))
+        self.sniffer_table.setItem(
+            row, 0, QTableWidgetItem(packet_info["time"]))
+        self.sniffer_table.setItem(
+            row, 1, QTableWidgetItem(packet_info["source"]))
+        self.sniffer_table.setItem(
+            row, 2, QTableWidgetItem(packet_info["destination"]))
+        self.sniffer_table.setItem(
+            row, 3, QTableWidgetItem(packet_info["protocol"]))
+        self.sniffer_table.setItem(
+            row, 4, QTableWidgetItem(str(packet_info["length"])))
 
     def clear_simulation(self):
         self.canvas.clear_topology()
@@ -328,3 +345,77 @@ class MainWindow(QMainWindow):
             f"Router B: {link['router_b']}\n"
             f"Status: {link['status']}"
         )
+
+    def update_routing_table(self, target_router_id, new_table):
+        """
+        Hàm này nhận tín hiệu từ Module 2/3 (RIP/OSPF Engine) và vẽ lại QTableWidget:
+         - param target_router_id: Tên của router vừa gửi tín hiệu (VD: "Router_A")
+         - param new_table: Dictionary chứa bảng định tuyến của router đó
+        """
+
+        # 1. Kiểm tra xem người dùng có đang "bấm chọn" xem Router này không.
+        # Nếu đang xem Router B mà Router A có tín hiệu cập nhật thì ta bỏ qua (không vẽ lại).
+        if self.current_selected_router != target_router_id:
+            return
+
+        # self.table_widget là đối tượng QTableWidget bạn kéo thả trong QtDesigner hoặc tạo bằng code
+        table = self.table_widget
+
+        # 2. Xóa sạch các dòng dữ liệu cũ trong bảng để vẽ lại từ đầu
+        table.setRowCount(0)
+
+        # 3. Cấu hình tiêu đề các cột (Nếu chưa cấu hình ở hàm init)
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(
+            ["Mạng Đích (Dest)", "Next Hop", "Metric", "Cổng (Interface)", "Trạng thái"])
+
+        # 4. Duyệt qua từng mạng trong Dictionary để điền vào các hàng
+        row_index = 0
+        current_time = time.time()
+
+        for dest_network, info in new_table.items():
+            # Thêm 1 hàng mới trống vào bảng
+            table.insertRow(row_index)
+
+            # --- Cột 1: Mạng Đích (Destination Network) ---
+            table.setItem(row_index, 0, QTableWidgetItem(str(dest_network)))
+
+            # --- Cột 2: Next Hop ---
+            # Nếu là mạng kết nối trực tiếp, Next Hop thường để '0.0.0.0', ta đổi text cho dễ nhìn
+            next_hop_str = "Directly Connected" if info['next_hop'] == '0.0.0.0' else str(
+                info['next_hop'])
+            table.setItem(row_index, 1, QTableWidgetItem(next_hop_str))
+
+            # --- Cột 3: Metric ---
+            metric = info['metric']
+            metric_str = "16 (Unreachable)" if metric >= 16 else str(metric)
+            item_metric = QTableWidgetItem(metric_str)
+            # Nếu Metric = 16, bôi đỏ chữ để người dùng dễ chú ý
+            if metric >= 16:
+                item_metric.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+            table.setItem(row_index, 2, item_metric)
+
+            # --- Cột 4: Interface ---
+            table.setItem(row_index, 3, QTableWidgetItem(
+                str(info['interface'])))
+
+            # --- Cột 5: Trạng thái (Tuổi của route) ---
+            if metric == 0:
+                status = "Local"
+            else:
+                age = int(current_time - info['timestamp'])
+                status = f"Update cách đây {age}s"
+            table.setItem(row_index, 4, QTableWidgetItem(status))
+
+            row_index += 1
+
+        # 5. Tự động giãn cột cho chữ vừa vặn
+        table.resizeColumnsToContents()
+
+    def update_sniffer_ui(self, packet_info):
+        """Hàm này sẽ nhận dictionary và in ra bảng Sniffer trên màn hình"""
+        print(
+            f"UI đã nhận được gói tin số {packet_info['no']}: {packet_info['protocol']}")
+        # Lấy self.table_sniffer ra và insertRow giống hệt cách làm với Routing Table
+        row = self.sniffer_table.rowCount()
+        self.sniffer_table.insertRow(row)

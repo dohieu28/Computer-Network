@@ -2,8 +2,8 @@
 
 import time
 
-from Interface import Interface
-from Link import Link
+from module1_core.Interface import Interface
+from module1_core.Link import Link
 
 
 class DummyRouter:
