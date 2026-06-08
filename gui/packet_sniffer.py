@@ -2,7 +2,6 @@ from datetime import datetime
 
 
 class PacketSniffer:
-
     def __init__(self):
         self.captured_packets = []
 
@@ -18,6 +17,8 @@ class PacketSniffer:
             protocol = "OSPF"
         elif "ARP" in text:
             protocol = "ARP"
+        elif "IP" in text:
+            protocol = "IP"
         else:
             protocol = "UNKNOWN"
 
@@ -26,9 +27,22 @@ class PacketSniffer:
             "source": source,
             "destination": destination,
             "protocol": protocol,
-            "length": len(raw_data)
+            "length": len(raw_data),
+            "raw_bytes": raw_data
         }
 
         self.captured_packets.append(packet_info)
-
         return packet_info
+
+    def capture_from_link(self, raw_bytes, src_interface, dst_interface, link):
+        """
+        Hàm này khớp với Module 1 Link.register_sniffer(callback).
+
+        Module 1 gọi:
+            callback(raw_bytes, src_interface, dst_interface, link)
+        """
+
+        source = getattr(src_interface, "ip_address", "Unknown")
+        destination = getattr(dst_interface, "ip_address", "Unknown")
+
+        return self.analyze_packet(raw_bytes, source, destination)

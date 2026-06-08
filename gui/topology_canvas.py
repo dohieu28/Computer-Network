@@ -6,13 +6,6 @@ import random
 
 
 class TopologyCanvas(QWidget):
-    """
-    Module 4 - View only.
-
-    TopologyCanvas không quản lý topology thật.
-    Nó chỉ nhận nodes/links từ TopologyManager rồi vẽ lên màn hình.
-    """
-
     router_clicked = pyqtSignal(str)
     link_clicked = pyqtSignal(dict)
 
@@ -21,7 +14,7 @@ class TopologyCanvas(QWidget):
 
         self.setMinimumHeight(320)
 
-        # Dữ liệu này chỉ dùng để HIỂN THỊ, không phải logic mạng chính.
+        # Chỉ là dữ liệu để hiển thị, không phải topology thật
         self.nodes = []
         self.links = []
 
@@ -40,17 +33,7 @@ class TopologyCanvas(QWidget):
 
     def set_topology(self, nodes, links):
         """
-        Nhận dữ liệu từ TopologyManager của Module 1.
-
-        nodes có thể là:
-        - list[str]
-        - list[TopologyNode]
-        - dict[str, TopologyNode]
-
-        links có thể là:
-        - list[TopologyLink]
-        - list[dict]
-        - list[tuple]
+        Nhận dữ liệu từ TopologyManager của Module 1 rồi vẽ.
         """
 
         self.nodes = self.normalize_nodes(nodes)
@@ -59,15 +42,15 @@ class TopologyCanvas(QWidget):
         for node_id in self.nodes:
             if node_id not in self.node_positions:
                 self.node_positions[node_id] = (
-                    random.randint(120, 700),
-                    random.randint(80, 250)
+                    random.randint(120, 750),
+                    random.randint(80, 260)
                 )
 
             if node_id not in self.node_status:
                 self.node_status[node_id] = "Running"
 
-        # Xóa vị trí của node không còn tồn tại
         current_nodes = set(self.nodes)
+
         self.node_positions = {
             node_id: pos
             for node_id, pos in self.node_positions.items()
@@ -111,16 +94,20 @@ class TopologyCanvas(QWidget):
                 cost = 1
 
             elif isinstance(link, dict):
-                source = link.get("source") or link.get("router_a")
-                target = link.get("target") or link.get("router_b")
-                status = link.get("status") or link.get("data", {}).get("status", "UP")
+                source = link.get("source")
+                target = link.get("target")
                 cost = link.get("cost", 1)
+
+                data = link.get("data", {})
+                status = data.get("status", link.get("status", "UP"))
 
             elif hasattr(link, "source") and hasattr(link, "target"):
                 source = link.source
                 target = link.target
-                status = getattr(link, "data", {}).get("status", "UP")
                 cost = getattr(link, "cost", 1)
+
+                data = getattr(link, "data", {})
+                status = data.get("status", "UP")
 
             else:
                 continue
@@ -143,17 +130,12 @@ class TopologyCanvas(QWidget):
     def get_links(self):
         return list(self.links)
 
-    def set_node_status(self, node_id, status):
-        if node_id in self.nodes:
-            self.node_status[node_id] = status
-            self.update()
-
     def update_link_status(self, source, target, status):
         for link in self.links:
-            same_direction = link["source"] == source and link["target"] == target
-            reverse_direction = link["source"] == target and link["target"] == source
+            same = link["source"] == source and link["target"] == target
+            reverse = link["source"] == target and link["target"] == source
 
-            if same_direction or reverse_direction:
+            if same or reverse:
                 link["status"] = status
                 self.update()
                 return True
@@ -162,10 +144,10 @@ class TopologyCanvas(QWidget):
 
     def find_link(self, source, target):
         for link in self.links:
-            same_direction = link["source"] == source and link["target"] == target
-            reverse_direction = link["source"] == target and link["target"] == source
+            same = link["source"] == source and link["target"] == target
+            reverse = link["source"] == target and link["target"] == source
 
-            if same_direction or reverse_direction:
+            if same or reverse:
                 return link
 
         return None
@@ -179,12 +161,6 @@ class TopologyCanvas(QWidget):
         if link["status"] == "DOWN":
             return False
 
-        if self.node_status.get(source) == "Stopped":
-            return False
-
-        if self.node_status.get(destination) == "Stopped":
-            return False
-
         self.packet_source = source
         self.packet_destination = destination
         self.animation_progress = 0
@@ -195,14 +171,11 @@ class TopologyCanvas(QWidget):
 
     def animate_path(self, path):
         """
-        Dành cho tích hợp sau này với RIP/OSPF.
-
-        Ví dụ:
-        path = ["R1", "R2", "R3", "R5"]
-
-        Hiện tại hàm này chuẩn bị sẵn interface.
-        Sau này có thể nâng cấp chạy lần lượt từng đoạn.
+        Chuẩn bị cho Module RIP/OSPF.
+        Sau này Module 2/3 có thể gửi:
+            ["R1", "R2", "R3", "R5"]
         """
+
         if not path or len(path) < 2:
             return False
 
@@ -264,7 +237,14 @@ class TopologyCanvas(QWidget):
                 x1, y1 = self.node_positions[source]
                 x2, y2 = self.node_positions[target]
 
-                distance = self.distance_to_line(x_click, y_click, x1, y1, x2, y2)
+                distance = self.distance_to_line(
+                    x_click,
+                    y_click,
+                    x1,
+                    y1,
+                    x2,
+                    y2
+                )
 
                 if distance <= 8:
                     self.link_clicked.emit(link)
@@ -313,7 +293,12 @@ class TopologyCanvas(QWidget):
 
             mid_x = int((x1 + x2) / 2)
             mid_y = int((y1 + y2) / 2)
-            painter.drawText(mid_x + 5, mid_y - 5, f"{link['status']} / cost={link['cost']}")
+
+            painter.drawText(
+                mid_x + 5,
+                mid_y - 5,
+                f"{link['status']} / cost={link['cost']}"
+            )
 
         if self.animating:
             x1, y1 = self.node_positions[self.packet_source]
@@ -326,6 +311,8 @@ class TopologyCanvas(QWidget):
             painter.setBrush(QBrush(Qt.blue))
             painter.drawEllipse(int(packet_x) - 6, int(packet_y) - 6, 12, 12)
 
+        painter.setPen(QPen(Qt.black, 2))
+
         for node_id, (x, y) in self.node_positions.items():
             status = self.node_status.get(node_id, "Running")
 
@@ -334,7 +321,5 @@ class TopologyCanvas(QWidget):
             else:
                 painter.setBrush(QBrush(Qt.lightGray))
 
-            painter.setPen(QPen(Qt.black, 2))
             painter.drawEllipse(x - 25, y - 25, 50, 50)
             painter.drawText(x - 10, y + 5, node_id)
-            painter.drawText(x - 28, y + 43, status)
