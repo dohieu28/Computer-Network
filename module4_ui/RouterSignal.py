@@ -9,13 +9,7 @@ class RouterSignal(QObject):
     router_updated = pyqtSignal(str, dict)  # router_name, routing_table
 
     packet_captured = pyqtSignal(dict)  # packet_info
-
-    # # Signal khi có gói tin mới được nhận từ Module 1 (Interface)
-    # # (interface_name, neighbor_ip, raw_bytes)
-    # packet_received = pyqtSignal(str, str, bytes)
-
-    # # Signal khi bảng định tuyến được cập nhật
-    # routing_table_updated = pyqtSignal(dict)  # routing_table
-
-    # # Signal khi có sự kiện quan trọng khác (ví dụ: lỗi, trạng thái thay đổi)
-    # event_occurred = pyqtSignal(str)  # event_description
+    
+    timer_updated = pyqtSignal(str, dict)  # router_name, {network: {state, time_remaining}}
+    
+    update_timer_tick = pyqtSignal(str)  # router_name - emit mỗi 1s để refresh UI

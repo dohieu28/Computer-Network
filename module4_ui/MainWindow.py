@@ -1,9 +1,13 @@
 from module4_ui.TopologyCanvas import TopologyCanvas
 from module4_ui.PacketSniffer import PacketSniffer
 from module4_ui.RouterSignal import RouterSignal
-import time
-from PyQt5 import QtGui
 
+from module1_core.TopologyManager import TopologyManager
+from module1_core.Interface import Interface
+from module1_core.Link import Link
+from module2_rip.RIPRouter import RIPRouter
+
+from PyQt5 import QtGui
 from PyQt5.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -15,67 +19,91 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QMessageBox,
     QComboBox,
-    QInputDialog,
-    QFileDialog
+    QFileDialog,
 )
 
-import json
+import time
 
 
 class MainWindow(QMainWindow):
-
     def __init__(self):
         super().__init__()
-
-        self.signals = RouterSignal()
-        self.signals.router_updated.connect(self.update_routing_table)
-        self.signals.packet_captured.connect(self.update_sniffer_ui)
 
         self.setWindowTitle("OSPF/RIP Network Emulator")
         self.resize(1200, 850)
 
+        self.signals = RouterSignal()
+        self.signals.router_updated.connect(self.update_routing_table)
+        self.signals.packet_captured.connect(self.update_sniffer_ui)
+        self.signals.timer_updated.connect(self.update_timer_display)
+
+        # Module 1
+        self.topology_manager = TopologyManager()
+
+        # Module 2
+        self.rip_routers = {}
+
+        # Link thật của Module 1
+        self.real_links = []
+
+        # Module 4
         self.canvas = TopologyCanvas()
         self.sniffer = PacketSniffer(self.signals)
 
+        self.btn_refresh = QPushButton("Refresh Topology")
         self.btn_add_router = QPushButton("Add Router")
         self.btn_add_link = QPushButton("Add Link")
         self.btn_delete_router = QPushButton("Delete Router")
         self.btn_delete_link = QPushButton("Delete Link")
-        self.btn_rename_router = QPushButton("Rename Router")
-        self.btn_toggle_router = QPushButton("Toggle Router Running/Stopped")
         self.btn_toggle_link = QPushButton("Toggle Link UP/DOWN")
         self.btn_start = QPushButton("Start Simulation")
-        self.btn_clear = QPushButton("Clear Simulation")
+        self.btn_clear = QPushButton("Clear View")
         self.btn_save = QPushButton("Save Topology")
         self.btn_load = QPushButton("Load Topology")
 
         self.combo_router_a = QComboBox()
         self.combo_router_b = QComboBox()
         self.combo_router_action = QComboBox()
+        
+        # Combo box để chọn router xem routing table
+        self.combo_router_view = QComboBox()
+        self.combo_router_view.addItem("All Routers")
+        self.combo_router_view.currentTextChanged.connect(self.on_router_view_changed)
 
         self.routing_table = QTableWidget()
-        self.routing_table.setColumnCount(4)
+        self.routing_table.setColumnCount(5)
         self.routing_table.setHorizontalHeaderLabels(
-            ["Destination", "Next Hop", "Metric", "Interface"]
+            ["Router", "Destination", "Next Hop", "Metric", "Interface"]
         )
+        
+        # Lưu lịch sử routing table cho mỗi router
+        self.routing_tables_history = {}
+        
+        # Lưu lịch sử timers cho mỗi router
+        self.timers_history = {}
 
         self.sniffer_table = QTableWidget()
         self.sniffer_table.setColumnCount(5)
-        # self.sniffer_table.setHorizontalHeaderLabels(
-        #     ["Time", "Source", "Destination", "Protocol", "Length"]
-        # )
         self.sniffer_table.setHorizontalHeaderLabels(
-            ["no", "protocol", "info"])
+            ["No", "Source", "Destination", "Protocol", "Length"]
+        )
+        
+        # Timer Table - hiển thị RIP timers
+        self.timer_table = QTableWidget()
+        self.timer_table.setColumnCount(6)
+        self.timer_table.setHorizontalHeaderLabels(
+            ["Router", "Network", "Metric", "Status", "Invalid Timer", "Flush Timer"]
+        )
+        self.timer_table.setMaximumHeight(150)
 
-        self.btn_add_router.clicked.connect(self.add_router_demo)
-        self.btn_add_link.clicked.connect(self.add_link_selected)
-        self.btn_delete_router.clicked.connect(self.delete_selected_router)
-        self.btn_delete_link.clicked.connect(self.delete_selected_link)
-        self.btn_rename_router.clicked.connect(self.rename_selected_router)
-        self.btn_toggle_router.clicked.connect(self.toggle_selected_router)
+        self.btn_refresh.clicked.connect(self.refresh_topology_view)
+        self.btn_add_router.clicked.connect(self.add_router)
+        self.btn_add_link.clicked.connect(self.add_link)
+        self.btn_delete_router.clicked.connect(self.delete_router)
+        self.btn_delete_link.clicked.connect(self.delete_link)
         self.btn_toggle_link.clicked.connect(self.toggle_selected_link)
-        self.btn_start.clicked.connect(self.start_demo)
-        self.btn_clear.clicked.connect(self.clear_simulation)
+        self.btn_start.clicked.connect(self.start_simulation)
+        self.btn_clear.clicked.connect(self.clear_view)
         self.btn_save.clicked.connect(self.save_topology)
         self.btn_load.clicked.connect(self.load_topology)
 
@@ -91,6 +119,14 @@ class MainWindow(QMainWindow):
 
         left_layout = QVBoxLayout()
         left_layout.addWidget(QLabel("Routing Table"))
+        
+        # Thêm combo box để chọn router
+        router_select_layout = QHBoxLayout()
+        router_select_layout.addWidget(QLabel("Select Router:"))
+        router_select_layout.addWidget(self.combo_router_view)
+        router_select_layout.addStretch()
+        left_layout.addLayout(router_select_layout)
+        
         left_layout.addWidget(self.routing_table)
 
         right_layout = QVBoxLayout()
@@ -100,193 +136,378 @@ class MainWindow(QMainWindow):
         table_layout.addLayout(left_layout)
         table_layout.addLayout(right_layout)
 
-        link_select_layout = QHBoxLayout()
-        link_select_layout.addWidget(QLabel("Router A:"))
-        link_select_layout.addWidget(self.combo_router_a)
-        link_select_layout.addWidget(QLabel("Router B:"))
-        link_select_layout.addWidget(self.combo_router_b)
-        link_select_layout.addWidget(self.btn_add_link)
-        link_select_layout.addWidget(self.btn_delete_link)
-        link_select_layout.addWidget(self.btn_toggle_link)
+        link_layout = QHBoxLayout()
+        link_layout.addWidget(QLabel("Router A:"))
+        link_layout.addWidget(self.combo_router_a)
+        link_layout.addWidget(QLabel("Router B:"))
+        link_layout.addWidget(self.combo_router_b)
+        link_layout.addWidget(self.btn_add_link)
+        link_layout.addWidget(self.btn_delete_link)
+        link_layout.addWidget(self.btn_toggle_link)
 
-        router_action_layout = QHBoxLayout()
-        router_action_layout.addWidget(QLabel("Router Action:"))
-        router_action_layout.addWidget(self.combo_router_action)
-        router_action_layout.addWidget(self.btn_delete_router)
-        router_action_layout.addWidget(self.btn_rename_router)
-        router_action_layout.addWidget(self.btn_toggle_router)
+        router_layout = QHBoxLayout()
+        router_layout.addWidget(QLabel("Router Action:"))
+        router_layout.addWidget(self.combo_router_action)
+        router_layout.addWidget(self.btn_add_router)
+        router_layout.addWidget(self.btn_delete_router)
 
         button_layout = QHBoxLayout()
-        button_layout.addWidget(self.btn_add_router)
+        button_layout.addWidget(self.btn_refresh)
         button_layout.addWidget(self.btn_start)
         button_layout.addWidget(self.btn_clear)
         button_layout.addWidget(self.btn_save)
         button_layout.addWidget(self.btn_load)
 
         main_layout.addLayout(table_layout)
-        main_layout.addLayout(link_select_layout)
-        main_layout.addLayout(router_action_layout)
+        
+        # Thêm Timer Table
+        main_layout.addWidget(QLabel("RIP Timers (Routes Status & Countdown)"))
+        main_layout.addWidget(self.timer_table)
+        
+        main_layout.addLayout(link_layout)
+        main_layout.addLayout(router_layout)
         main_layout.addLayout(button_layout)
 
         container = QWidget()
         container.setLayout(main_layout)
-
         self.setCentralWidget(container)
+
+        self.refresh_topology_view()
+
+    def refresh_topology_view(self):
+        self.canvas.set_topology(
+            self.topology_manager.nodes,
+            self.topology_manager.links
+        )
+        self.sync_router_combo()
 
     def sync_router_combo(self):
         current_a = self.combo_router_a.currentText()
         current_b = self.combo_router_b.currentText()
         current_action = self.combo_router_action.currentText()
+        current_view = self.combo_router_view.currentText()
 
         self.combo_router_a.clear()
         self.combo_router_b.clear()
         self.combo_router_action.clear()
+        
+        # Không xóa combo_router_view, chỉ cập nhật routers
+        routers_list = list(self.canvas.get_nodes())
+        
+        # Cập nhật combo_router_view
+        self.combo_router_view.blockSignals(True)  # Tắm tín hiệu tạm thời
+        self.combo_router_view.clear()
+        self.combo_router_view.addItem("All Routers")
+        for router_id in routers_list:
+            self.combo_router_view.addItem(router_id)
+        
+        # Khôi phục lựa chọn trước đó
+        index = self.combo_router_view.findText(current_view)
+        if index >= 0:
+            self.combo_router_view.setCurrentIndex(index)
+        self.combo_router_view.blockSignals(False)  # Bật tín hiệu lại
 
-        for router_id in self.canvas.routers:
-            self.combo_router_a.addItem(router_id)
-            self.combo_router_b.addItem(router_id)
-            self.combo_router_action.addItem(router_id)
+        for node_id in routers_list:
+            self.combo_router_a.addItem(node_id)
+            self.combo_router_b.addItem(node_id)
+            self.combo_router_action.addItem(node_id)
 
         for combo, current in [
             (self.combo_router_a, current_a),
             (self.combo_router_b, current_b),
-            (self.combo_router_action, current_action)
+            (self.combo_router_action, current_action),
         ]:
             index = combo.findText(current)
             if index >= 0:
                 combo.setCurrentIndex(index)
 
-    def add_router_demo(self):
-        router_id = f"R{len(self.canvas.routers) + 1}"
-        self.canvas.add_router(router_id)
-        self.sync_router_combo()
+    def add_router(self):
+        router_id = f"R{len(self.topology_manager.nodes) + 1}"
 
-    def add_link_selected(self):
-        self.sync_router_combo()
+        self.topology_manager.add_node(router_id, node_type="router")
 
-        router_a = self.combo_router_a.currentText()
-        router_b = self.combo_router_b.currentText()
+        router_ip = f"192.168.{len(self.rip_routers) + 1}.1"
+        rip_router = RIPRouter(router_id, router_ip, self.signals)
 
-        if not router_a or not router_b:
+        self.rip_routers[router_id] = rip_router
+
+        self.refresh_topology_view()
+
+    def link_exists(self, source, target):
+        for link in self.canvas.get_links():
+            same = link["source"] == source and link["target"] == target
+            reverse = link["source"] == target and link["target"] == source
+
+            if same or reverse:
+                return True
+
+        return False
+
+    def add_link(self):
+        source = self.combo_router_a.currentText()
+        target = self.combo_router_b.currentText()
+
+        if not source or not target:
             QMessageBox.warning(self, "Warning", "Please add routers first.")
             return
 
-        if router_a == router_b:
+        if source == target:
             QMessageBox.warning(
                 self, "Warning", "Router A and B must be different.")
             return
 
-        if not self.canvas.add_link(router_a, router_b):
-            QMessageBox.warning(self, "Warning", "Link already exists!")
-
-    def delete_selected_router(self):
-        self.sync_router_combo()
-        router_id = self.combo_router_action.currentText()
-
-        if not router_id:
-            QMessageBox.warning(self, "Warning", "Please select a router.")
+        if self.link_exists(source, target):
+            QMessageBox.warning(self, "Warning", "Link already exists.")
             return
 
-        self.canvas.delete_router(router_id)
-        self.sync_router_combo()
+        link_index = len(self.real_links) + 1
 
-    def delete_selected_link(self):
-        router_a = self.combo_router_a.currentText()
-        router_b = self.combo_router_b.currentText()
-
-        if not self.canvas.delete_link(router_a, router_b):
-            QMessageBox.warning(self, "Warning", "This link does not exist.")
-
-    def rename_selected_router(self):
-        self.sync_router_combo()
-        old_name = self.combo_router_action.currentText()
-
-        if not old_name:
-            QMessageBox.warning(self, "Warning", "Please select a router.")
-            return
-
-        new_name, ok = QInputDialog.getText(
-            self,
-            "Rename Router",
-            "Enter new router name:"
+        source_interface = Interface(
+            name=f"{source}-eth{link_index}",
+            ip=f"10.0.{link_index}.1",
+            mac=f"00:00:00:00:{link_index:02x}:01",
+            owner_router=self.rip_routers[source]
         )
 
-        if not ok or not new_name:
-            return
+        target_interface = Interface(
+            name=f"{target}-eth{link_index}",
+            ip=f"10.0.{link_index}.2",
+            mac=f"00:00:00:00:{link_index:02x}:02",
+            owner_router=self.rip_routers[target]
+        )
 
-        if not self.canvas.rename_router(old_name, new_name):
-            QMessageBox.warning(
-                self, "Warning", "Invalid name or name already exists.")
-            return
+        real_link = Link(
+            source_interface,
+            target_interface,
+            cost=1,
+            delay=0.1
+        )
 
-        self.sync_router_combo()
+        # Đăng ký sniffer của Module 4 vào Link của Module 1
+        real_link.register_sniffer(
+            lambda raw_bytes, s=source, t=target:
+            self.capture_packet_from_link(raw_bytes, s, t)
+        )
 
-    def toggle_selected_router(self):
-        self.sync_router_combo()
+        self.real_links.append(
+            {
+                "source": source,
+                "target": target,
+                "link": real_link,
+                "source_interface": source_interface,
+                "target_interface": target_interface
+            }
+        )
+
+        self.rip_routers[source].interfaces.append(source_interface)
+        self.rip_routers[target].interfaces.append(target_interface)
+
+        self.rip_routers[source].add_direct_route(
+            f"10.0.{link_index}.0",
+            source_interface.name
+        )
+
+        self.rip_routers[target].add_direct_route(
+            f"10.0.{link_index}.0",
+            target_interface.name
+        )
+
+        self.topology_manager.add_link(
+            source,
+            target,
+            source_interface=source_interface.name,
+            target_interface=target_interface.name,
+            cost=1,
+            status="UP"
+        )
+
+        self.refresh_topology_view()
+
+    def delete_router(self):
         router_id = self.combo_router_action.currentText()
 
         if not router_id:
             QMessageBox.warning(self, "Warning", "Please select a router.")
             return
 
-        self.canvas.toggle_router_status(router_id)
+        self.topology_manager.remove_node(router_id)
 
-    def toggle_selected_link(self):
-        router_a = self.combo_router_a.currentText()
-        router_b = self.combo_router_b.currentText()
+        if router_id in self.rip_routers:
+            del self.rip_routers[router_id]
 
-        if not self.canvas.toggle_link(router_a, router_b):
-            QMessageBox.warning(self, "Warning", "This link does not exist.")
+        self.real_links = [
+            item for item in self.real_links
+            if item["source"] != router_id and item["target"] != router_id
+        ]
 
-    def start_demo(self):
-        router_a = self.combo_router_a.currentText()
-        router_b = self.combo_router_b.currentText()
+        self.refresh_topology_view()
 
-        if not router_a or not router_b:
+    def delete_link(self):
+        source = self.combo_router_a.currentText()
+        target = self.combo_router_b.currentText()
+
+        if not source or not target:
             QMessageBox.warning(self, "Warning", "Please select two routers.")
             return
 
-        if router_a == router_b:
-            QMessageBox.warning(
-                self, "Warning", "Router A and B must be different.")
-            return
+        self.topology_manager.remove_link(source, target)
 
-        if not self.canvas.animate_packet(router_a, router_b):
-            QMessageBox.warning(
-                self,
-                "Warning",
-                "Cannot send packet. Link is missing, DOWN, or router is Stopped."
+        self.real_links = [
+            item for item in self.real_links
+            if not (
+                (item["source"] == source and item["target"] == target)
+                or
+                (item["source"] == target and item["target"] == source)
             )
+        ]
+
+        self.refresh_topology_view()
+
+    def toggle_selected_link(self):
+        source = self.combo_router_a.currentText()
+        target = self.combo_router_b.currentText()
+
+        if not source or not target:
+            QMessageBox.warning(self, "Warning", "Please select two routers.")
             return
 
-        self.routing_table.setRowCount(1)
-        self.routing_table.setItem(0, 0, QTableWidgetItem("192.168.1.0/24"))
-        self.routing_table.setItem(0, 1, QTableWidgetItem(router_b))
-        self.routing_table.setItem(0, 2, QTableWidgetItem("1"))
-        self.routing_table.setItem(0, 3, QTableWidgetItem("eth0"))
+        target_link = None
 
-        packet_info = self.sniffer.analyze_bytes(
-            "RIP UPDATE PACKET",
-            router_a,
-            router_b
-        )
+        for item in self.real_links:
+            same = item["source"] == source and item["target"] == target
+            reverse = item["source"] == target and item["target"] == source
 
+            if same or reverse:
+                target_link = item["link"]
+                break
+
+        if target_link is None:
+            QMessageBox.warning(self, "Warning", "This link does not exist.")
+            return
+
+        new_status = "DOWN" if target_link.status == "UP" else "UP"
+        target_link.set_status(new_status)
+
+        self.canvas.update_link_status(source, target, new_status)
+
+    def start_simulation(self):
+        # Khởi động RIP ENGINE
+        if len(self.rip_routers) < 2:
+            QMessageBox.warning(
+                self, "Warning", "Please add at least two routers.")
+            return
+
+        if len(self.real_links) == 0:
+            QMessageBox.warning(
+                self, "Warning", "Please add at least one link.")
+            return
+
+        # Khởi động RIP thật
+        for router in self.rip_routers.values():
+            if not router.running:
+                router.start_rip_engine()  # <-- Khởi chạy RIP Engine thật sự
+
+        # Gửi update ngay để không phải chờ 30s
+        for router in self.rip_routers.values():
+            router.send_update_out_all_interfaces()
+
+        # Cập nhật bảng định tuyến thật lên GUI
+        for router_id, router in self.rip_routers.items():
+            self.update_routing_table(router_id, router.routing_table)
+
+        # Animate packets trên tất cả links (không chỉ 2 router được chọn)
+        for link_info in self.real_links:
+            source = link_info["source"]
+            target = link_info["target"]
+            self.canvas.animate_packet(source, target)
+
+    def update_routing_table(self, router_id, routing_table):
+        # Lưu routing table của router này vào lịch sử
+        self.routing_tables_history[router_id] = routing_table
+        
+        # Hiển thị routing table dựa trên lựa chọn combo_router_view
+        self.display_routing_table()
+
+    def display_routing_table(self):
+        """Hiển thị routing table dựa trên router được chọn"""
+        selected_router = self.combo_router_view.currentText()
+        
+        self.routing_table.setRowCount(0)
+        
+        if selected_router == "All Routers":
+            # Hiển thị tất cả routers
+            for router_id, routing_table in self.routing_tables_history.items():
+                self._add_routes_to_table(router_id, routing_table)
+        else:
+            # Hiển thị router được chọn
+            if selected_router in self.routing_tables_history:
+                routing_table = self.routing_tables_history[selected_router]
+                self._add_routes_to_table(selected_router, routing_table)
+        
+        self.routing_table.resizeColumnsToContents()
+
+    def _add_routes_to_table(self, router_id, routing_table):
+        """Thêm routes của một router vào bảng"""
+        for destination, info in routing_table.items():
+            row = self.routing_table.rowCount()
+            self.routing_table.insertRow(row)
+
+            self.routing_table.setItem(
+                row, 0, QTableWidgetItem(str(router_id)))
+            self.routing_table.setItem(
+                row, 1, QTableWidgetItem(str(destination)))
+            self.routing_table.setItem(
+                row, 2, QTableWidgetItem(str(info.get("next_hop", ""))))
+
+            metric = info.get("metric", "")
+            metric_item = QTableWidgetItem(str(metric))
+
+            if isinstance(metric, int) and metric >= 16:
+                metric_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+
+            self.routing_table.setItem(row, 3, metric_item)
+            self.routing_table.setItem(
+                row, 4, QTableWidgetItem(str(info.get("interface", ""))))
+
+    def on_router_view_changed(self, router_name):
+        """Được gọi khi chọn router khác trong combo box"""
+        self.display_routing_table()
+
+    def add_packet_log(self, packet_info):
         row = self.sniffer_table.rowCount()
         self.sniffer_table.insertRow(row)
 
         self.sniffer_table.setItem(
-            row, 0, QTableWidgetItem(packet_info["time"]))
+            row, 0, QTableWidgetItem(str(packet_info["no"])))
         self.sniffer_table.setItem(
-            row, 1, QTableWidgetItem(packet_info["source"]))
+            row, 1, QTableWidgetItem(str(packet_info["source"])))
         self.sniffer_table.setItem(
-            row, 2, QTableWidgetItem(packet_info["destination"]))
+            row, 2, QTableWidgetItem(str(packet_info["destination"])))
         self.sniffer_table.setItem(
-            row, 3, QTableWidgetItem(packet_info["protocol"]))
+            row, 3, QTableWidgetItem(str(packet_info["protocol"])))
         self.sniffer_table.setItem(
             row, 4, QTableWidgetItem(str(packet_info["length"])))
 
-    def clear_simulation(self):
-        self.canvas.clear_topology()
+    def update_sniffer_ui(self, packet_info):
+        self.add_packet_log(packet_info)
+
+    def capture_packet_from_link(self, raw_bytes, source="Unknown", destination="Unknown"):
+        packet_info = self.sniffer.analyze_packet(
+            raw_bytes,
+            source,
+            destination
+        )
+        self.add_packet_log(packet_info)
+
+    def clear_view(self):
+        for router in self.rip_routers.values():
+            router.running = False
+
+        self.topology_manager = TopologyManager()
+        self.rip_routers.clear()
+        self.real_links.clear()
+
+        self.canvas.clear_view()
 
         self.combo_router_a.clear()
         self.combo_router_b.clear()
@@ -294,128 +515,110 @@ class MainWindow(QMainWindow):
 
         self.routing_table.setRowCount(0)
         self.sniffer_table.setRowCount(0)
+        self.timer_table.setRowCount(0)
         self.sniffer.captured_packets.clear()
+        self.routing_tables_history.clear()
+        self.timers_history.clear()
 
     def save_topology(self):
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Save Topology",
             "",
-            "JSON Files (*.json)"
+            "JSON Files (*.json)",
         )
 
         if not filename:
             return
 
-        with open(filename, "w", encoding="utf-8") as file:
-            json.dump(self.canvas.export_data(), file, indent=4)
+        self.topology_manager.export_topology(filename)
 
     def load_topology(self):
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Load Topology",
             "",
-            "JSON Files (*.json)"
+            "JSON Files (*.json)",
         )
 
         if not filename:
             return
 
-        with open(filename, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        self.topology_manager.load_topology(filename)
 
-        self.canvas.load_data(data)
-        self.sync_router_combo()
+        # Khi load JSON chỉ khôi phục topology hiển thị.
+        # RIPRouter/Interface/Link thật sẽ cần tạo lại riêng nếu muốn chạy simulation thật.
+        self.refresh_topology_view()
 
-    def show_router_info(self, router_id):
+    def show_router_info(self, node_id):
+        router = self.rip_routers.get(node_id)
+
+        if router is None:
+            info = "No RIPRouter object found."
+        else:
+            info = f"RIP Router ID: {router.router_id}\nIP: {router.ip}\nInterfaces: {len(router.interfaces)}"
+
         QMessageBox.information(
             self,
             "Router Information",
-            f"Router ID: {router_id}\n"
-            f"Status: {self.canvas.router_status.get(router_id, 'Running')}\n"
-            f"Interfaces: eth0\n"
-            f"Protocol: RIP/OSPF"
+            info
         )
 
     def show_link_info(self, link):
         QMessageBox.information(
             self,
             "Link Information",
-            f"Router A: {link['router_a']}\n"
-            f"Router B: {link['router_b']}\n"
-            f"Status: {link['status']}"
+            f"Source: {link['source']}\n"
+            f"Target: {link['target']}\n"
+            f"Status: {link['status']}\n"
+            f"Cost: {link['cost']}",
         )
-
-    def update_routing_table(self, target_router_id, new_table):
-        """
-        Hàm này nhận tín hiệu từ Module 2/3 (RIP/OSPF Engine) và vẽ lại QTableWidget:
-         - param target_router_id: Tên của router vừa gửi tín hiệu (VD: "Router_A")
-         - param new_table: Dictionary chứa bảng định tuyến của router đó
-        """
-
-        # 1. Kiểm tra xem người dùng có đang "bấm chọn" xem Router này không.
-        # Nếu đang xem Router B mà Router A có tín hiệu cập nhật thì ta bỏ qua (không vẽ lại).
-        if self.current_selected_router != target_router_id:
-            return
-
-        # self.table_widget là đối tượng QTableWidget bạn kéo thả trong QtDesigner hoặc tạo bằng code
-        table = self.table_widget
-
-        # 2. Xóa sạch các dòng dữ liệu cũ trong bảng để vẽ lại từ đầu
-        table.setRowCount(0)
-
-        # 3. Cấu hình tiêu đề các cột (Nếu chưa cấu hình ở hàm init)
-        table.setColumnCount(5)
-        table.setHorizontalHeaderLabels(
-            ["Mạng Đích (Dest)", "Next Hop", "Metric", "Cổng (Interface)", "Trạng thái"])
-
-        # 4. Duyệt qua từng mạng trong Dictionary để điền vào các hàng
-        row_index = 0
-        current_time = time.time()
-
-        for dest_network, info in new_table.items():
-            # Thêm 1 hàng mới trống vào bảng
-            table.insertRow(row_index)
-
-            # --- Cột 1: Mạng Đích (Destination Network) ---
-            table.setItem(row_index, 0, QTableWidgetItem(str(dest_network)))
-
-            # --- Cột 2: Next Hop ---
-            # Nếu là mạng kết nối trực tiếp, Next Hop thường để '0.0.0.0', ta đổi text cho dễ nhìn
-            next_hop_str = "Directly Connected" if info['next_hop'] == '0.0.0.0' else str(
-                info['next_hop'])
-            table.setItem(row_index, 1, QTableWidgetItem(next_hop_str))
-
-            # --- Cột 3: Metric ---
-            metric = info['metric']
-            metric_str = "16 (Unreachable)" if metric >= 16 else str(metric)
-            item_metric = QTableWidgetItem(metric_str)
-            # Nếu Metric = 16, bôi đỏ chữ để người dùng dễ chú ý
-            if metric >= 16:
-                item_metric.setForeground(QtGui.QBrush(QtGui.QColor("red")))
-            table.setItem(row_index, 2, item_metric)
-
-            # --- Cột 4: Interface ---
-            table.setItem(row_index, 3, QTableWidgetItem(
-                str(info['interface'])))
-
-            # --- Cột 5: Trạng thái (Tuổi của route) ---
-            if metric == 0:
-                status = "Local"
-            else:
-                age = int(current_time - info['timestamp'])
-                status = f"Update cách đây {age}s"
-            table.setItem(row_index, 4, QTableWidgetItem(status))
-
-            row_index += 1
-
-        # 5. Tự động giãn cột cho chữ vừa vặn
-        table.resizeColumnsToContents()
-
-    def update_sniffer_ui(self, packet_info):
-        """Hàm này sẽ nhận dictionary và in ra bảng Sniffer trên màn hình"""
-        print(
-            f"UI đã nhận được gói tin số {packet_info['no']}: {packet_info['protocol']}")
-        # Lấy self.table_sniffer ra và insertRow giống hệt cách làm với Routing Table
-        row = self.sniffer_table.rowCount()
-        self.sniffer_table.insertRow(row)
+    
+    def update_timer_display(self, router_id, timers_info):
+        """Cập nhật timer display khi router emit signal"""
+        # Lưu timers của router này vào history
+        self.timers_history[router_id] = timers_info
+        
+        # Rebuild toàn bộ table từ history
+        self.timer_table.setRowCount(0)
+        
+        for rid, timers in self.timers_history.items():
+            for network, info in timers.items():
+                row = self.timer_table.rowCount()
+                self.timer_table.insertRow(row)
+                
+                # Router
+                self.timer_table.setItem(row, 0, QTableWidgetItem(str(rid)))
+                
+                # Network
+                self.timer_table.setItem(row, 1, QTableWidgetItem(str(network)))
+                
+                # Metric
+                metric_item = QTableWidgetItem(str(info['metric']))
+                if info['metric'] >= 16:
+                    metric_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+                self.timer_table.setItem(row, 2, metric_item)
+                
+                # Status (VALID, INVALID, FLUSH)
+                status_item = QTableWidgetItem(info['status'])
+                if info['status'] == "VALID":
+                    status_item.setForeground(QtGui.QBrush(QtGui.QColor("green")))
+                elif info['status'] == "INVALID":
+                    status_item.setForeground(QtGui.QBrush(QtGui.QColor("orange")))
+                elif info['status'] == "FLUSH":
+                    status_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+                self.timer_table.setItem(row, 3, status_item)
+                
+                # Invalid Timer (mắc đỏ khi < 10s)
+                invalid_timer_item = QTableWidgetItem(f"{info['invalid_timer']}s")
+                if info['invalid_timer'] < 10:
+                    invalid_timer_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+                self.timer_table.setItem(row, 4, invalid_timer_item)
+                
+                # Flush Timer
+                flush_timer_item = QTableWidgetItem(f"{info['flush_timer']}s")
+                if info['flush_timer'] < 10:
+                    flush_timer_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
+                self.timer_table.setItem(row, 5, flush_timer_item)
+        
+        self.timer_table.resizeColumnsToContents()

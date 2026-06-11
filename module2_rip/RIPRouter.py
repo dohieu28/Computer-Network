@@ -15,108 +15,15 @@ FLUSH_TIMER = 240
 INFINITY = 16
 
 
-# class RIPPacketProcessor:
-#     """
-#     Class phụ trách bóc tách mảng Byte và chạy thuật toán Bellman-Ford
-#     """
-
-#     def __init__(self, router):
-#         self.router = router  # Nhận tham chiếu đến Router đang chứa nó
-
-#     def parse_rip_packet(self, raw_bytes):
-#         """Dịch ngược mảng byte thô thành Object của Scapy"""
-#         try:
-#             packet = Ether(raw_bytes)
-#             if packet.haslayer(RIP):
-#                 return packet
-#             return None
-#         except Exception as e:
-#             logging.error(f"Lỗi khi parse gói tin: {e}")
-#             return None
-
-#     def process_incoming_update(self, raw_bytes, neighbor_ip, incoming_interface):
-#         """
-#         Bóc tách gói tin và chạy thuật toán Bellman-Ford để cập nhật Routing Table
-#         """
-#         packet = self.parse_rip_packet(raw_bytes)
-#         if not packet or not packet.haslayer(RIP):
-#             return
-
-#         rip_layer = packet[RIP]
-
-#         # Chỉ xử lý các gói Response (Routing Update)
-#         if rip_layer.cmd != 2:
-#             return
-
-#         route_changed = False
-
-#         # Lặp qua từng mạng được quảng bá trong gói RIP
-#         # scapy lưu các entry thành 1 mảng trong rip_layer
-#         for i in range(1, 26):  # Một gói RIP tối đa chứa 25 routes
-#             try:
-#                 entry = packet.getlayer(RIPEntry, i)
-#                 if entry is None:
-#                     break
-#             except:
-#                 break
-
-#             dest_network = entry.addr
-#             metric_in = entry.metric
-
-#             # Thuật toán Bellman-Ford: metric mới = metric hàng xóm gửi + 1
-#             new_metric = min(metric_in + 1, INFINITY)
-
-#             current_route = self.router.routing_table.get(dest_network)
-
-#             # Trường hợp 1: Mạng mới hoàn toàn -> Thêm vào bảng
-#             if current_route is None and new_metric < INFINITY:
-#                 self.router.routing_table[dest_network] = {
-#                     'metric': new_metric,
-#                     'next_hop': neighbor_ip,
-#                     'interface': incoming_interface,
-#                     'timestamp': time.time()
-#                 }
-#                 route_changed = True
-#                 logging.info(
-#                     f"[{self.router.router_id}] Đã thêm mạng mới: {dest_network} qua {neighbor_ip} (Metric: {new_metric})")
-
-#             # Trường hợp 2: Đã có mạng này trong bảng
-#             elif current_route is not None:
-#                 # Nếu thông tin đến từ chính Next Hop hiện tại -> Bắt buộc cập nhật (dù metric tăng hay giảm)
-#                 if current_route['next_hop'] == neighbor_ip:
-#                     current_route['timestamp'] = time.time()  # Reset timer
-#                     if current_route['metric'] != new_metric:
-#                         current_route['metric'] = new_metric
-#                         route_changed = True
-#                         logging.info(
-#                             f"[{self.router.router_id}] Cập nhật metric mạng {dest_network} thành {new_metric} từ {neighbor_ip}")
-
-#                 # Nếu thông tin đến từ Next Hop khác, nhưng có metric nhỏ hơn (đường đi tốt hơn) -> Cập nhật
-#                 elif new_metric < current_route['metric']:
-#                     self.router.routing_table[dest_network] = {
-#                         'metric': new_metric,
-#                         'next_hop': neighbor_ip,
-#                         'interface': incoming_interface,
-#                         'timestamp': time.time()
-#                     }
-#                     route_changed = True
-#                     logging.info(
-#                         f"[{self.router.router_id}] Tìm thấy đường đi tốt hơn tới {dest_network} qua {neighbor_ip} (Metric: {new_metric})")
-
-#         # Kích hoạt Gửi Update khẩn cấp (Triggered Update) nếu có sự thay đổi
-#         if route_changed:
-#             self.router.send_triggered_update()
-
-
 class RIPRouter:
     """
     Lớp định tuyến RIP, kế thừa (hoặc hoạt động cùng) VirtualRouter ở Module 1
     """
 
-    def __init__(self, router_id, ip):
+    def __init__(self, router_id, ip, signals=None):
         self.router_id = router_id
         self.ip = ip
-        self.signals = RouterSignal()
+        self.signals = signals if signals else RouterSignal()
         # Danh sách các cổng mạng (Sẽ do Module 1 cung cấp)
         self.interfaces = []
 
@@ -226,20 +133,38 @@ class RIPRouter:
             current_time = time.time()
             routes_to_delete = []
             route_changed = False
+            
+            # Tạo dict thông tin timer để emit signal
+            timers_info = {}
 
             for dest, info in self.routing_table.items():
                 if info['metric'] == 0:
                     continue  # Không áp dụng timer cho mạng kết nối trực tiếp
-
+                
                 time_elapsed = current_time - info['timestamp']
-
+                time_remaining_invalid = max(0, INVALID_TIMER - time_elapsed)
+                time_remaining_flush = max(0, FLUSH_TIMER - time_elapsed)
+                
+                # Xác định trạng thái
                 if time_elapsed > FLUSH_TIMER:
+                    status = "FLUSH"
                     routes_to_delete.append(dest)
                 elif time_elapsed > INVALID_TIMER and info['metric'] != INFINITY:
+                    status = "INVALID"
                     info['metric'] = INFINITY
                     route_changed = True
                     logging.warning(
                         f"[{self.router_id}] Mạng {dest} đã Unreachable (Vượt {INVALID_TIMER}s)")
+                else:
+                    status = "VALID"
+                
+                timers_info[dest] = {
+                    'metric': info['metric'],
+                    'status': status,
+                    'time_elapsed': round(time_elapsed, 1),
+                    'invalid_timer': round(time_remaining_invalid, 1),
+                    'flush_timer': round(time_remaining_flush, 1),
+                }
 
             for dest in routes_to_delete:
                 del self.routing_table[dest]
@@ -249,8 +174,13 @@ class RIPRouter:
 
             if route_changed:
                 self.send_triggered_update()
+            
+            # Emit signal với thông tin timer
+            if timers_info:  # Chỉ emit nếu có route
+                logging.debug(f"[{self.router_id}] Emitting timer update: {timers_info}")
+                self.signals.timer_updated.emit(self.router_id, timers_info)
 
-            time.sleep(2)  # Quét mỗi 2s
+            time.sleep(1)  # Quét mỗi 1s (thay vì 2s) để update UI mượt hơn
 
     def receive_bytes_from_module1(self, raw_bytes, incoming_interface, neighbor_ip):
         """
