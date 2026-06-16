@@ -9,7 +9,11 @@ class RouterSignal(QObject):
     router_updated = pyqtSignal(str, dict)  # router_name, routing_table
 
     packet_captured = pyqtSignal(dict)  # packet_info
-    
-    timer_updated = pyqtSignal(str, dict)  # router_name, {network: {state, time_remaining}}
-    
-    update_timer_tick = pyqtSignal(str)  # router_name - emit mỗi 1s để refresh UI
+
+    # router_name, {network: {state, time_remaining}}
+    timer_updated = pyqtSignal(str, dict)
+
+    # router_name - emit mỗi 1s để refresh UI
+    update_timer_tick = pyqtSignal(str)
+
+    packet_sent = pyqtSignal(str, str)  # src_router, dst_router

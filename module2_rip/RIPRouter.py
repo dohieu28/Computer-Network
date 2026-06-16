@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
 # Constants cho Timers của RIP (Có thể thu nhỏ lại để test cho nhanh, vd: 3, 18, 24)
 UPDATE_TIMER = 30
 INVALID_TIMER = 180
+HOLD_DOWN_TIMER = 180
 FLUSH_TIMER = 240
 INFINITY = 16
 
@@ -20,9 +21,9 @@ class RIPRouter:
     Lớp định tuyến RIP, kế thừa (hoặc hoạt động cùng) VirtualRouter ở Module 1
     """
 
-    def __init__(self, router_id, ip, signals=None):
+    def __init__(self, router_id, router_ip=None, signals=None):
         self.router_id = router_id
-        self.ip = ip
+        self.router_ip = router_ip
         self.signals = signals if signals else RouterSignal()
         # Danh sách các cổng mạng (Sẽ do Module 1 cung cấp)
         self.interfaces = []
@@ -30,6 +31,7 @@ class RIPRouter:
         # Cấu trúc bảng định tuyến:
         # { '10.0.0.0': {'metric': 1, 'next_hop': '192.168.1.2', 'interface': 'eth0', 'timestamp': 1600000.0} }
         self.routing_table = {}
+        self.last_update_time = time.time()
 
         self.processor = RIPPacketProcessor(self)
         self.running = False
@@ -37,11 +39,13 @@ class RIPRouter:
     def add_direct_route(self, network_ip, interface_name):
         """Thêm mạng kết nối trực tiếp (Metric = 0)"""
         self.routing_table[network_ip] = {
+            'protocol': 'C',  # Connected
             'metric': 0,
-            'next_hop': '0.0.0.0',  # Kết nối trực tiếp
+            'next_hop': 'DIRECT',  # Kết nối trực tiếp
             'interface': interface_name,
             # Routes trực tiếp thường không bao giờ hết hạn, cần xử lý logic riêng
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'hold_down_until': 0
         }
 
     def start_rip_engine(self):
@@ -78,6 +82,16 @@ class RIPRouter:
     def craft_rip_update(self, target_interface):
         """Dùng Scapy để tạo mảng byte gói tin RIPv2"""
         # Áp dụng quy tắc Split Horizon & Poison Reverse
+        interface_obj = None
+
+        for iface in self.interfaces:
+            if iface.name == target_interface:
+                interface_obj = iface
+                break
+
+        if not interface_obj:
+            return None
+
         routes_to_send = self.apply_split_horizon(
             self.routing_table, target_interface, poison_reverse=True)
 
@@ -87,7 +101,7 @@ class RIPRouter:
         # Khởi tạo gói tin Multicast chuẩn RIPv2
         eth_layer = Ether(dst="01:00:5E:00:00:09")  # Multicast MAC
         # Multicast IP RIPv2
-        ip_layer = IP(src=self.ip, dst="224.0.0.9")
+        ip_layer = IP(src=interface_obj.ip, dst="224.0.0.9")
         udp_layer = UDP(sport=520, dport=520)
         rip_header = RIP(cmd=2, version=2)  # cmd=2 là Response
 
@@ -110,6 +124,8 @@ class RIPRouter:
             if raw_bytes:
                 # LƯU Ý: interface.send() là hàm sẽ được định nghĩa ở Module 1
                 interface.send(raw_bytes)
+                self.signals.packet_sent.emit(
+                    self.router_id, interface.name)
                 logging.debug(
                     f"[{self.router_id}] Đã gửi RIP Update ra cổng {interface.name}")
 
@@ -121,66 +137,255 @@ class RIPRouter:
         # Bắn tín hiệu lên GUI (Module 4) ở đây
         # Example: signal_ui_update(self.router_id, self.routing_table)
 
+    def handle_interface_down(self, interface_name):
+        """
+       Xử lý khi interface DOWN.
+
+       - Tất cả route đi qua interface này đều bị Route Poisoning (metric = 16)
+       - Reset timer
+       - Gửi Triggered Update
+       - Để _timer_check_loop() tự FLUSH sau
+       """
+
+        route_changed = False
+        current_time = time.time()
+
+        for network, info in self.routing_table.items():
+
+            # Chỉ xử lý các route đi qua interface này
+            if info["interface"] != interface_name:
+                continue
+
+            # Nếu đã unreachable rồi thì bỏ qua
+            if info["metric"] >= INFINITY:
+                continue
+
+            info["metric"] = INFINITY
+            info["timestamp"] = current_time
+
+            # Nếu bạn có hold_down_until
+            info["hold_down_until"] = current_time + HOLD_DOWN_TIMER
+
+            logging.warning(
+                f"[{self.router_id}] "
+                f"Route {network} via {interface_name} is DOWN."
+            )
+
+            route_changed = True
+
+        if route_changed:
+            self.send_triggered_update()
+
+            self.signals.router_updated.emit(
+                self.router_id,
+                self.routing_table
+            )
+
+    def handle_interface_up(self, interface):
+        """
+       Xử lý khi một interface chuyển sang trạng thái UP.
+
+       - Khôi phục route kết nối trực tiếp.
+       - Gửi Triggered Update để các router lân cận học lại route.
+       """
+
+        # Tính network từ địa chỉ IP của interface
+        ip_parts = interface.ip.split(".")
+        network = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.0"
+
+        current_time = time.time()
+
+        # Nếu route đã tồn tại thì chỉ cập nhật lại
+        if network in self.routing_table:
+
+            self.routing_table[network]["protocol"] = "C"
+            self.routing_table[network]["metric"] = 0
+            self.routing_table[network]["next_hop"] = "DIRECT"
+            self.routing_table[network]["interface"] = interface.name
+            self.routing_table[network]["timestamp"] = current_time
+            self.routing_table[network]["hold_down_until"] = 0
+
+        else:
+            self.routing_table[network] = {
+                "protocol": "C",
+                "metric": 0,
+                "next_hop": "DIRECT",
+                "interface": interface.name,
+                "timestamp": current_time,
+                "hold_down_until": 0,
+            }
+
+        logging.info(
+            f"[{self.router_id}] Direct route {network} restored on {interface.name}"
+        )
+
+        # Gửi Triggered Update
+        self.send_triggered_update()
+
+        # Cập nhật GUI
+        self.signals.router_updated.emit(
+            self.router_id,
+            self.routing_table
+        )
+
     def _periodic_update_loop(self):
         """Luồng đếm ngược 30s"""
         while self.running:
             self.send_update_out_all_interfaces()
-            time.sleep(UPDATE_TIMER)
+            self.last_update_time = time.time()
+
+            end_time = self.last_update_time + UPDATE_TIMER
+            while self.running and time.time() < end_time:
+                time.sleep(0.1)
 
     def _timer_check_loop(self):
-        """Luồng quét và đánh dấu mạng chết (Invalid) hoặc xóa (Flush)"""
+        """Kiểm tra Invalid / Hold-down / Flush Timer"""
+
         while self.running:
+
             current_time = time.time()
+            update_remaining = max(
+                0, UPDATE_TIMER - (current_time - self.last_update_time))
             routes_to_delete = []
             route_changed = False
-            
-            # Tạo dict thông tin timer để emit signal
+
             timers_info = {}
 
-            for dest, info in self.routing_table.items():
-                if info['metric'] == 0:
-                    continue  # Không áp dụng timer cho mạng kết nối trực tiếp
-                
-                time_elapsed = current_time - info['timestamp']
-                time_remaining_invalid = max(0, INVALID_TIMER - time_elapsed)
-                time_remaining_flush = max(0, FLUSH_TIMER - time_elapsed)
-                
-                # Xác định trạng thái
-                if time_elapsed > FLUSH_TIMER:
+            for dest, info in list(self.routing_table.items()):
+
+                # ==========================
+                # DIRECT ROUTE
+                # ==========================
+                if info.get("protocol") == "C" or info["metric"] == 0:
+
+                    timers_info[dest] = {
+                        "metric": info["metric"],
+                        "status": "DIRECT",
+                        "update_timer": round(update_remaining, 1),
+                        "invalid_timer": "N/A",
+                        "hold_down_timer": "N/A",
+                        "flush_timer": "N/A",
+                    }
+
+                    continue
+
+                # ==========================
+                # RIP ROUTE
+                # ==========================
+
+                time_elapsed = current_time - info["timestamp"]
+
+                invalid_remaining = max(
+                    0,
+                    INVALID_TIMER - time_elapsed
+                )
+
+                flush_remaining = max(
+                    0,
+                    FLUSH_TIMER - time_elapsed
+                )
+
+                hold_down_remaining = max(
+                    0,
+                    info.get("hold_down_until", 0) - current_time
+                )
+
+                # --------------------------
+                # VALID
+                # --------------------------
+
+                status = "VALID"
+
+                # --------------------------
+                # INVALID
+                # --------------------------
+
+                if (
+                    info["metric"] < INFINITY
+                    and time_elapsed >= INVALID_TIMER
+                ):
+
+                    info["metric"] = INFINITY
+                    info["hold_down_until"] = (
+                        current_time + HOLD_DOWN_TIMER
+                    )
+
+                    status = "INVALID"
+                    route_changed = True
+
+                    logging.warning(
+                        f"[{self.router_id}] "
+                        f"Route {dest} became INVALID."
+                    )
+
+                # --------------------------
+                # HOLD DOWN
+                # --------------------------
+
+                elif (
+                    info["metric"] >= INFINITY
+                    and hold_down_remaining > 0
+                ):
+
+                    status = "HOLD_DOWN"
+
+                # --------------------------
+                # FLUSH
+                # --------------------------
+
+                if time_elapsed >= FLUSH_TIMER:
+
                     status = "FLUSH"
                     routes_to_delete.append(dest)
-                elif time_elapsed > INVALID_TIMER and info['metric'] != INFINITY:
-                    status = "INVALID"
-                    info['metric'] = INFINITY
-                    route_changed = True
-                    logging.warning(
-                        f"[{self.router_id}] Mạng {dest} đã Unreachable (Vượt {INVALID_TIMER}s)")
-                else:
-                    status = "VALID"
-                
+
                 timers_info[dest] = {
-                    'metric': info['metric'],
-                    'status': status,
-                    'time_elapsed': round(time_elapsed, 1),
-                    'invalid_timer': round(time_remaining_invalid, 1),
-                    'flush_timer': round(time_remaining_flush, 1),
+                    "metric": info["metric"],
+                    "status": status,
+                    "update_timer": round(update_remaining, 1),
+                    "invalid_timer": round(invalid_remaining, 1),
+                    "hold_down_timer": round(hold_down_remaining, 1),
+                    "flush_timer": round(flush_remaining, 1),
                 }
 
+            # ==========================
+            # DELETE FLUSHED ROUTES
+            # ==========================
+
             for dest in routes_to_delete:
-                del self.routing_table[dest]
-                route_changed = True
-                logging.warning(
-                    f"[{self.router_id}] Đã xóa mạng {dest} khỏi bảng (Vượt {FLUSH_TIMER}s)")
+
+                if dest in self.routing_table:
+
+                    del self.routing_table[dest]
+
+                    logging.warning(
+                        f"[{self.router_id}] "
+                        f"Route {dest} flushed."
+                    )
+
+                    route_changed = True
+
+            # ==========================
+            # TRIGGERED UPDATE
+            # ==========================
 
             if route_changed:
                 self.send_triggered_update()
-            
-            # Emit signal với thông tin timer
-            if timers_info:  # Chỉ emit nếu có route
-                logging.debug(f"[{self.router_id}] Emitting timer update: {timers_info}")
-                self.signals.timer_updated.emit(self.router_id, timers_info)
 
-            time.sleep(1)  # Quét mỗi 1s (thay vì 2s) để update UI mượt hơn
+                self.signals.router_updated.emit(
+                    self.router_id,
+                    self.routing_table
+                )
+
+            # ==========================
+            # UPDATE TIMER GUI
+            # ==========================
+
+            self.signals.timer_updated.emit(
+                self.router_id,
+                timers_info
+            )
+
+            time.sleep(1)
 
     def receive_bytes_from_module1(self, raw_bytes, incoming_interface, neighbor_ip):
         """

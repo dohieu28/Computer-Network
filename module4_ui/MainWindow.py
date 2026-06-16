@@ -36,6 +36,7 @@ class MainWindow(QMainWindow):
         self.signals.router_updated.connect(self.update_routing_table)
         self.signals.packet_captured.connect(self.update_sniffer_ui)
         self.signals.timer_updated.connect(self.update_timer_display)
+        self.signals.packet_sent.connect(self.animate_rip_packet)
 
         # Module 1
         self.topology_manager = TopologyManager()
@@ -49,6 +50,8 @@ class MainWindow(QMainWindow):
         # Module 4
         self.canvas = TopologyCanvas()
         self.sniffer = PacketSniffer(self.signals)
+
+        self.simulation_running = False
 
         self.btn_refresh = QPushButton("Refresh Topology")
         self.btn_add_router = QPushButton("Add Router")
@@ -64,21 +67,23 @@ class MainWindow(QMainWindow):
         self.combo_router_a = QComboBox()
         self.combo_router_b = QComboBox()
         self.combo_router_action = QComboBox()
-        
+
         # Combo box để chọn router xem routing table
         self.combo_router_view = QComboBox()
         self.combo_router_view.addItem("All Routers")
-        self.combo_router_view.currentTextChanged.connect(self.on_router_view_changed)
+        self.combo_router_view.currentTextChanged.connect(
+            self.on_router_view_changed)
 
         self.routing_table = QTableWidget()
-        self.routing_table.setColumnCount(5)
+        self.routing_table.setColumnCount(6)
         self.routing_table.setHorizontalHeaderLabels(
-            ["Router", "Destination", "Next Hop", "Metric", "Interface"]
+            ["Protocol", "Router", "Destination",
+                "Next Hop", "Metric", "Interface"]
         )
-        
+
         # Lưu lịch sử routing table cho mỗi router
         self.routing_tables_history = {}
-        
+
         # Lưu lịch sử timers cho mỗi router
         self.timers_history = {}
 
@@ -87,12 +92,13 @@ class MainWindow(QMainWindow):
         self.sniffer_table.setHorizontalHeaderLabels(
             ["No", "Source", "Destination", "Protocol", "Length"]
         )
-        
+
         # Timer Table - hiển thị RIP timers
         self.timer_table = QTableWidget()
-        self.timer_table.setColumnCount(6)
+        self.timer_table.setColumnCount(8)
         self.timer_table.setHorizontalHeaderLabels(
-            ["Router", "Network", "Metric", "Status", "Invalid Timer", "Flush Timer"]
+            ["Router", "Network", "Metric", "Status", "Update Timer",
+                "Invalid Timer", "Hold Down Timer", "Flush Timer"]
         )
         self.timer_table.setMaximumHeight(150)
 
@@ -119,14 +125,14 @@ class MainWindow(QMainWindow):
 
         left_layout = QVBoxLayout()
         left_layout.addWidget(QLabel("Routing Table"))
-        
+
         # Thêm combo box để chọn router
         router_select_layout = QHBoxLayout()
         router_select_layout.addWidget(QLabel("Select Router:"))
         router_select_layout.addWidget(self.combo_router_view)
         router_select_layout.addStretch()
         left_layout.addLayout(router_select_layout)
-        
+
         left_layout.addWidget(self.routing_table)
 
         right_layout = QVBoxLayout()
@@ -159,11 +165,11 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.btn_load)
 
         main_layout.addLayout(table_layout)
-        
+
         # Thêm Timer Table
         main_layout.addWidget(QLabel("RIP Timers (Routes Status & Countdown)"))
         main_layout.addWidget(self.timer_table)
-        
+
         main_layout.addLayout(link_layout)
         main_layout.addLayout(router_layout)
         main_layout.addLayout(button_layout)
@@ -190,17 +196,17 @@ class MainWindow(QMainWindow):
         self.combo_router_a.clear()
         self.combo_router_b.clear()
         self.combo_router_action.clear()
-        
+
         # Không xóa combo_router_view, chỉ cập nhật routers
         routers_list = list(self.canvas.get_nodes())
-        
+
         # Cập nhật combo_router_view
         self.combo_router_view.blockSignals(True)  # Tắm tín hiệu tạm thời
         self.combo_router_view.clear()
         self.combo_router_view.addItem("All Routers")
         for router_id in routers_list:
             self.combo_router_view.addItem(router_id)
-        
+
         # Khôi phục lựa chọn trước đó
         index = self.combo_router_view.findText(current_view)
         if index >= 0:
@@ -220,6 +226,24 @@ class MainWindow(QMainWindow):
             index = combo.findText(current)
             if index >= 0:
                 combo.setCurrentIndex(index)
+
+    def animate_rip_packet(self, router_id, interface_name):
+
+        for item in self.real_links:
+
+            if item["source_interface"].name == interface_name:
+
+                self.canvas.animate_packet(
+                    item["source"],
+                    item["target"]
+                )
+
+            elif item["target_interface"].name == interface_name:
+
+                self.canvas.animate_packet(
+                    item["target"],
+                    item["source"]
+                )
 
     def add_router(self):
         router_id = f"R{len(self.topology_manager.nodes) + 1}"
@@ -332,13 +356,24 @@ class MainWindow(QMainWindow):
 
         self.topology_manager.remove_node(router_id)
 
-        if router_id in self.rip_routers:
-            del self.rip_routers[router_id]
+        for item in self.real_links:
+            if item["source"] == router_id:
 
-        self.real_links = [
-            item for item in self.real_links
-            if item["source"] != router_id and item["target"] != router_id
-        ]
+                self.rip_routers[item["source"]].handle_interface_down(
+                    item["source_interface"].name
+                )
+
+                self.rip_routers[item["target"]].handle_interface_down(
+                    item["target_interface"].name)
+
+            elif item["target"] == router_id:
+
+                del self.rip_routers[router_id]
+
+                self.real_links = [
+                    item for item in self.real_links
+                    if item["source"] != router_id and item["target"] != router_id
+                ]
 
         self.refresh_topology_view()
 
@@ -347,19 +382,48 @@ class MainWindow(QMainWindow):
         target = self.combo_router_b.currentText()
 
         if not source or not target:
-            QMessageBox.warning(self, "Warning", "Please select two routers.")
+            QMessageBox.warning(
+                self,
+                "Warning",
+                "Please select two routers."
+            )
             return
 
-        self.topology_manager.remove_link(source, target)
+    # Tìm link cần xóa
+        link_to_remove = None
 
-        self.real_links = [
-            item for item in self.real_links
-            if not (
+        for item in self.real_links:
+            if (
                 (item["source"] == source and item["target"] == target)
                 or
                 (item["source"] == target and item["target"] == source)
+            ):
+                link_to_remove = item
+                break
+
+        if link_to_remove is None:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                "Link does not exist."
             )
-        ]
+            return
+
+        if self.is_simulation_running():
+         # Thông báo cho RIP rằng interface bị DOWN
+            self.rip_routers[source].handle_interface_down(
+                link_to_remove["source_interface"].name
+            )
+
+            self.rip_routers[target].handle_interface_down(
+                link_to_remove["target_interface"].name
+            )
+
+        # Xóa khỏi danh sách link thật
+        self.real_links.remove(link_to_remove)
+
+        # Xóa khỏi topology hiển thị
+        self.topology_manager.remove_link(source, target)
 
         self.refresh_topology_view()
 
@@ -388,6 +452,25 @@ class MainWindow(QMainWindow):
         new_status = "DOWN" if target_link.status == "UP" else "UP"
         target_link.set_status(new_status)
 
+        if self.is_simulation_running():
+
+            if new_status == "DOWN":
+                self.rip_routers[source].handle_interface_down(
+                    item["source_interface"].name
+                )
+                self.rip_routers[target].handle_interface_down(
+                    item["target_interface"].name
+                )
+
+            else:
+                # Khi bật lại link, cần thông báo cho RIP để nó có thể cập nhật routing table nếu cần
+                self.rip_routers[source].handle_interface_up(
+                    item["source_interface"].name
+                )
+                self.rip_routers[target].handle_interface_up(
+                    item["target_interface"].name
+                )
+
         self.canvas.update_link_status(source, target, new_status)
 
     def start_simulation(self):
@@ -402,38 +485,44 @@ class MainWindow(QMainWindow):
                 self, "Warning", "Please add at least one link.")
             return
 
+        # # Nếu simulation đã chạy, không làm gì cả
+        # if self.start_simulation:
+        #     return
+
+        self.simulation_running = True
+
         # Khởi động RIP thật
         for router in self.rip_routers.values():
             if not router.running:
                 router.start_rip_engine()  # <-- Khởi chạy RIP Engine thật sự
 
-        # Gửi update ngay để không phải chờ 30s
-        for router in self.rip_routers.values():
-            router.send_update_out_all_interfaces()
-
         # Cập nhật bảng định tuyến thật lên GUI
         for router_id, router in self.rip_routers.items():
             self.update_routing_table(router_id, router.routing_table)
 
-        # Animate packets trên tất cả links (không chỉ 2 router được chọn)
-        for link_info in self.real_links:
-            source = link_info["source"]
-            target = link_info["target"]
-            self.canvas.animate_packet(source, target)
+    def stop_simulation(self):
+
+        self.simulation_started = False
+
+        for router in self.rip_routers.values():
+            router.running = False
+
+    def is_simulation_running(self):
+        return self.simulation_running
 
     def update_routing_table(self, router_id, routing_table):
         # Lưu routing table của router này vào lịch sử
         self.routing_tables_history[router_id] = routing_table
-        
+
         # Hiển thị routing table dựa trên lựa chọn combo_router_view
         self.display_routing_table()
 
     def display_routing_table(self):
         """Hiển thị routing table dựa trên router được chọn"""
         selected_router = self.combo_router_view.currentText()
-        
+
         self.routing_table.setRowCount(0)
-        
+
         if selected_router == "All Routers":
             # Hiển thị tất cả routers
             for router_id, routing_table in self.routing_tables_history.items():
@@ -443,7 +532,7 @@ class MainWindow(QMainWindow):
             if selected_router in self.routing_tables_history:
                 routing_table = self.routing_tables_history[selected_router]
                 self._add_routes_to_table(selected_router, routing_table)
-        
+
         self.routing_table.resizeColumnsToContents()
 
     def _add_routes_to_table(self, router_id, routing_table):
@@ -453,11 +542,14 @@ class MainWindow(QMainWindow):
             self.routing_table.insertRow(row)
 
             self.routing_table.setItem(
-                row, 0, QTableWidgetItem(str(router_id)))
+                row, 0, QTableWidgetItem(str(info.get("protocol", "")))
+            )
             self.routing_table.setItem(
-                row, 1, QTableWidgetItem(str(destination)))
+                row, 1, QTableWidgetItem(str(router_id)))
             self.routing_table.setItem(
-                row, 2, QTableWidgetItem(str(info.get("next_hop", ""))))
+                row, 2, QTableWidgetItem(str(destination) + "/24"))
+            self.routing_table.setItem(
+                row, 3, QTableWidgetItem(str(info.get("next_hop", ""))))
 
             metric = info.get("metric", "")
             metric_item = QTableWidgetItem(str(metric))
@@ -465,13 +557,100 @@ class MainWindow(QMainWindow):
             if isinstance(metric, int) and metric >= 16:
                 metric_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
 
-            self.routing_table.setItem(row, 3, metric_item)
+            self.routing_table.setItem(row, 4, metric_item)
             self.routing_table.setItem(
-                row, 4, QTableWidgetItem(str(info.get("interface", ""))))
+                row, 5, QTableWidgetItem(str(info.get("interface", ""))))
+
+    def display_timer_table(self):
+        """Hiển thị RIP Timer theo router được chọn"""
+
+        selected_router = self.combo_router_view.currentText()
+
+        self.timer_table.setRowCount(0)
+
+        if selected_router == "All Routers":
+            routers_to_show = self.timers_history.items()
+        else:
+            if selected_router not in self.timers_history:
+                return
+
+            routers_to_show = [
+                (selected_router, self.timers_history[selected_router])
+            ]
+
+        for rid, timers in routers_to_show:
+
+            for network, info in timers.items():
+
+                row = self.timer_table.rowCount()
+                self.timer_table.insertRow(row)
+
+                # Router
+                self.timer_table.setItem(
+                    row, 0,
+                    QTableWidgetItem(str(rid))
+                )
+
+                # Network
+                self.timer_table.setItem(
+                    row, 1,
+                    QTableWidgetItem(str(network))
+                )
+
+                # Metric
+                metric_item = QTableWidgetItem(str(info["metric"]))
+                if info["metric"] >= 16:
+                    metric_item.setForeground(
+                        QtGui.QBrush(QtGui.QColor("red"))
+                    )
+                self.timer_table.setItem(row, 2, metric_item)
+
+                # Status
+                status_item = QTableWidgetItem(info["status"])
+
+                if info["status"] == "VALID":
+                    status_item.setForeground(
+                        QtGui.QBrush(QtGui.QColor("green"))
+                    )
+
+                elif info["status"] in ("INVALID", "HOLD_DOWN"):
+                    status_item.setForeground(
+                        QtGui.QBrush(QtGui.QColor("orange"))
+                    )
+
+                elif info["status"] == "FLUSH":
+                    status_item.setForeground(
+                        QtGui.QBrush(QtGui.QColor("red"))
+                    )
+
+                self.timer_table.setItem(row, 3, status_item)
+
+                # Update Timer
+                item = QTableWidgetItem(f"{info['update_timer']}s")
+                self.set_timer_color(item, info['update_timer'])
+                self.timer_table.setItem(row, 4, item)
+
+                # Invalid Timer
+                item = QTableWidgetItem(f"{info['invalid_timer']}s")
+                self.set_timer_color(item, info['invalid_timer'])
+                self.timer_table.setItem(row, 5, item)
+
+                # Hold Down Timer
+                item = QTableWidgetItem(f"{info['hold_down_timer']}s")
+                self.set_timer_color(item, info['hold_down_timer'])
+                self.timer_table.setItem(row, 6, item)
+
+                # Flush Timer
+                item = QTableWidgetItem(f"{info['flush_timer']}s")
+                self.set_timer_color(item, info['flush_timer'])
+                self.timer_table.setItem(row, 7, item)
+
+        self.timer_table.resizeColumnsToContents()
 
     def on_router_view_changed(self, router_name):
         """Được gọi khi chọn router khác trong combo box"""
         self.display_routing_table()
+        self.display_timer_table()
 
     def add_packet_log(self, packet_info):
         row = self.sniffer_table.rowCount()
@@ -564,6 +743,16 @@ class MainWindow(QMainWindow):
             info
         )
 
+    def set_timer_color(self, item, value):
+        if isinstance(value, str):
+            item.setForeground(
+                QtGui.QBrush(QtGui.QColor("gray"))
+            )
+        elif value < 10:
+            item.setForeground(
+                QtGui.QBrush(QtGui.QColor("red"))
+            )
+
     def show_link_info(self, link):
         QMessageBox.information(
             self,
@@ -573,52 +762,12 @@ class MainWindow(QMainWindow):
             f"Status: {link['status']}\n"
             f"Cost: {link['cost']}",
         )
-    
+
     def update_timer_display(self, router_id, timers_info):
         """Cập nhật timer display khi router emit signal"""
         # Lưu timers của router này vào history
         self.timers_history[router_id] = timers_info
-        
-        # Rebuild toàn bộ table từ history
-        self.timer_table.setRowCount(0)
-        
-        for rid, timers in self.timers_history.items():
-            for network, info in timers.items():
-                row = self.timer_table.rowCount()
-                self.timer_table.insertRow(row)
-                
-                # Router
-                self.timer_table.setItem(row, 0, QTableWidgetItem(str(rid)))
-                
-                # Network
-                self.timer_table.setItem(row, 1, QTableWidgetItem(str(network)))
-                
-                # Metric
-                metric_item = QTableWidgetItem(str(info['metric']))
-                if info['metric'] >= 16:
-                    metric_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
-                self.timer_table.setItem(row, 2, metric_item)
-                
-                # Status (VALID, INVALID, FLUSH)
-                status_item = QTableWidgetItem(info['status'])
-                if info['status'] == "VALID":
-                    status_item.setForeground(QtGui.QBrush(QtGui.QColor("green")))
-                elif info['status'] == "INVALID":
-                    status_item.setForeground(QtGui.QBrush(QtGui.QColor("orange")))
-                elif info['status'] == "FLUSH":
-                    status_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
-                self.timer_table.setItem(row, 3, status_item)
-                
-                # Invalid Timer (mắc đỏ khi < 10s)
-                invalid_timer_item = QTableWidgetItem(f"{info['invalid_timer']}s")
-                if info['invalid_timer'] < 10:
-                    invalid_timer_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
-                self.timer_table.setItem(row, 4, invalid_timer_item)
-                
-                # Flush Timer
-                flush_timer_item = QTableWidgetItem(f"{info['flush_timer']}s")
-                if info['flush_timer'] < 10:
-                    flush_timer_item.setForeground(QtGui.QBrush(QtGui.QColor("red")))
-                self.timer_table.setItem(row, 5, flush_timer_item)
-        
+
+        self.display_timer_table()  # Cập nhật hiển thị timer table dựa trên lịch sử
+
         self.timer_table.resizeColumnsToContents()
