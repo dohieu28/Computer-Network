@@ -23,10 +23,13 @@ class TopologyCanvas(QWidget):
         self.dragging_node = None
 
         # Đổi thành list để animate nhiều packets đồng thời
-        self.animating_packets = []  # [{"source": s, "destination": d, "progress": 0}, ...]
+        # [{"source": s, "destination": d, "progress": 0}, ...]
+        self.animating_packets = []
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
+
+        self.highlighted_path = []
 
     def set_topology(self, nodes, links):
         self.nodes = self.normalize_nodes(nodes)
@@ -164,7 +167,7 @@ class TopologyCanvas(QWidget):
         # Chỉ start timer nếu chưa running
         if not self.timer.isActive():
             self.timer.start(30)
-        
+
         return True
 
     def animate_path(self, path):
@@ -177,10 +180,11 @@ class TopologyCanvas(QWidget):
         # Cập nhật tất cả packets
         for packet in self.animating_packets:
             packet["progress"] += 0.03
-        
+
         # Xóa packets đã hoàn thành
-        self.animating_packets = [p for p in self.animating_packets if p["progress"] < 1]
-        
+        self.animating_packets = [
+            p for p in self.animating_packets if p["progress"] < 1]
+
         # Dừng timer nếu không còn packets
         if not self.animating_packets:
             self.timer.stop()
@@ -276,10 +280,35 @@ class TopologyCanvas(QWidget):
             x1, y1 = self.node_positions[source]
             x2, y2 = self.node_positions[target]
 
-            if link["status"] == "UP":
-                painter.setPen(QPen(Qt.black, 2))
-            else:
+            # if link["status"] == "UP":
+            #     painter.setPen(QPen(Qt.black, 2))
+            # else:
+            #     painter.setPen(QPen(Qt.red, 4))
+
+            is_highlighted = False
+
+            if len(self.highlighted_path) >= 2:
+
+                for i in range(len(self.highlighted_path) - 1):
+
+                    a = self.highlighted_path[i]
+                    b = self.highlighted_path[i + 1]
+
+                    if (
+                        (source == a and target == b)
+                        or (source == b and target == a)
+                    ):
+                        is_highlighted = True
+                        break
+
+            if link["status"] == "DOWN":
                 painter.setPen(QPen(Qt.red, 4))
+
+            elif is_highlighted:
+                painter.setPen(QPen(Qt.green, 5))
+
+            else:
+                painter.setPen(QPen(Qt.black, 2))
 
             painter.drawLine(x1, y1, x2, y2)
 
@@ -299,10 +328,10 @@ class TopologyCanvas(QWidget):
             source = packet["source"]
             destination = packet["destination"]
             progress = packet["progress"]
-            
+
             if source not in self.node_positions or destination not in self.node_positions:
                 continue
-            
+
             x1, y1 = self.node_positions[source]
             x2, y2 = self.node_positions[destination]
 
@@ -317,3 +346,13 @@ class TopologyCanvas(QWidget):
             painter.setBrush(QBrush(Qt.white))
             painter.drawEllipse(x - 25, y - 25, 50, 50)
             painter.drawText(x - 10, y + 5, node_id)
+
+    def highlight_path(self, path):
+
+        self.highlighted_path = path
+
+        self.update()
+
+    def clear_highlight(self):
+        self.highlighted_path = []
+        self.update()

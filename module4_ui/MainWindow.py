@@ -20,6 +20,8 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QComboBox,
     QFileDialog,
+    QTextEdit,
+    QAbstractItemView,
 )
 
 import time
@@ -80,6 +82,14 @@ class MainWindow(QMainWindow):
             ["Protocol", "Router", "Destination",
                 "Next Hop", "Metric", "Interface"]
         )
+
+        self.routing_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.routing_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.routing_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.routing_table.cellClicked.connect(self.on_route_selected)
+
+        self.txt_next_hop_chain = QTextEdit()
+        self.txt_next_hop_chain.setReadOnly(True)
 
         # Lưu lịch sử routing table cho mỗi router
         self.routing_tables_history = {}
@@ -547,7 +557,7 @@ class MainWindow(QMainWindow):
             self.routing_table.setItem(
                 row, 1, QTableWidgetItem(str(router_id)))
             self.routing_table.setItem(
-                row, 2, QTableWidgetItem(str(destination) + "/24"))
+                row, 2, QTableWidgetItem(str(destination)))
             self.routing_table.setItem(
                 row, 3, QTableWidgetItem(str(info.get("next_hop", ""))))
 
@@ -771,3 +781,135 @@ class MainWindow(QMainWindow):
         self.display_timer_table()  # Cập nhật hiển thị timer table dựa trên lịch sử
 
         self.timer_table.resizeColumnsToContents()
+
+    def find_router_by_interface_ip(self, ip):
+
+        for router_id, router in self.rip_routers.items():
+
+            for interface in router.interfaces:
+
+                if interface.ip == ip:
+                    return router_id
+
+        return None
+
+    def highlight_best_path(self, start_router_id, destination_network):
+
+        path = []
+
+        current_router = start_router_id
+
+        visited = set()
+
+        while True:
+
+            if current_router in visited:
+                break
+
+            visited.add(current_router)
+
+            router = self.rip_routers[current_router]
+
+            if destination_network not in router.routing_table:
+                break
+
+            route = router.routing_table[destination_network]
+
+            # mạng trực tiếp
+            if route["metric"] == 0:
+
+                path.append(current_router)
+                break
+
+            next_hop_ip = route["next_hop"]
+
+            next_router = self.find_router_by_interface_ip(next_hop_ip)
+
+            if next_router is None:
+                break
+
+            path.append(current_router)
+
+            current_router = next_router
+
+        if current_router not in path:
+            path.append(current_router)
+
+        self.canvas.highlight_path(path)
+
+    def build_next_hop_chain(self, start_router, destination_network):
+
+        chain = []
+
+        path = []
+
+        current_router = start_router
+
+        visited = set()
+
+        while True:
+
+            if current_router in visited:
+                chain.append("LOOP DETECTED")
+                break
+
+            visited.add(current_router)
+
+            router = self.rip_routers[current_router]
+
+            if destination_network not in router.routing_table:
+                chain.append("NO ROUTE")
+                break
+
+            route = router.routing_table[destination_network]
+
+            path.append(current_router)
+
+            # mạng trực tiếp
+            if route["metric"] == 0:
+
+                chain.append(
+                    f"{current_router} -> Directly Connected ({destination_network})"
+                )
+
+                break
+
+            next_hop = route["next_hop"]
+
+            chain.append(
+                f"{current_router} -> {next_hop}"
+            )
+
+            next_router = self.find_router_by_interface_ip(next_hop)
+
+            if next_router is None:
+                break
+
+            current_router = next_router
+
+        print(path)
+        print(chain)
+
+        return path, chain
+
+    def on_route_selected(self, row, column):
+
+        if column != 2:
+            return
+
+        router_id = self.routing_table.item(row, 1).text()
+
+        destination = self.routing_table.item(row, 2).text()
+
+        path, chain = self.build_next_hop_chain(
+            router_id,
+            destination
+        )
+
+        self.canvas.highlight_path(path)
+
+        self.txt_next_hop_chain.setPlainText(
+            "\n".join(chain)
+        )
+
+        print('Clicked on route:', router_id, destination)
