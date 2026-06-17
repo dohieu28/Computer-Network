@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
 
         self.txt_next_hop_chain = QTextEdit()
         self.txt_next_hop_chain.setReadOnly(True)
+        self.txt_next_hop_chain.setMaximumHeight(80)
 
         # Lưu lịch sử routing table cho mỗi router
         self.routing_tables_history = {}
@@ -118,7 +119,9 @@ class MainWindow(QMainWindow):
         self.btn_delete_router.clicked.connect(self.delete_router)
         self.btn_delete_link.clicked.connect(self.delete_link)
         self.btn_toggle_link.clicked.connect(self.toggle_selected_link)
-        self.btn_start.clicked.connect(self.start_simulation)
+        # self.btn_start.clicked.connect(self.start_simulation)
+        # <-- Thay đổi nút Start thành Toggle Simulation
+        self.btn_start.clicked.connect(self.toggle_simulation)
         self.btn_clear.clicked.connect(self.clear_view)
         self.btn_save.clicked.connect(self.save_topology)
         self.btn_load.clicked.connect(self.load_topology)
@@ -144,6 +147,8 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(router_select_layout)
 
         left_layout.addWidget(self.routing_table)
+        left_layout.addWidget(QLabel("Best Path Next-Hop Chain:"))
+        left_layout.addWidget(self.txt_next_hop_chain)
 
         right_layout = QVBoxLayout()
         right_layout.addWidget(QLabel("Packet Sniffer"))
@@ -488,12 +493,12 @@ class MainWindow(QMainWindow):
         if len(self.rip_routers) < 2:
             QMessageBox.warning(
                 self, "Warning", "Please add at least two routers.")
-            return
+            return False
 
         if len(self.real_links) == 0:
             QMessageBox.warning(
                 self, "Warning", "Please add at least one link.")
-            return
+            return False
 
         # # Nếu simulation đã chạy, không làm gì cả
         # if self.start_simulation:
@@ -510,12 +515,14 @@ class MainWindow(QMainWindow):
         for router_id, router in self.rip_routers.items():
             self.update_routing_table(router_id, router.routing_table)
 
-    def stop_simulation(self):
+        return True
 
-        self.simulation_started = False
+    def stop_simulation(self):
 
         for router in self.rip_routers.values():
             router.running = False
+
+        print("Simulation stopped.")
 
     def is_simulation_running(self):
         return self.simulation_running
@@ -913,3 +920,23 @@ class MainWindow(QMainWindow):
         )
 
         print('Clicked on route:', router_id, destination)
+
+    def toggle_simulation(self):
+
+        if not self.simulation_running:
+
+            if self.start_simulation():
+
+                self.simulation_running = True
+                self.btn_start.setText(
+                    "Stop Simulation"
+                )
+
+        else:
+
+            self.stop_simulation()
+
+            self.simulation_running = False
+            self.btn_start.setText(
+                "Start Simulation"
+            )
