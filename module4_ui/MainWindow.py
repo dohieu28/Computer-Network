@@ -8,6 +8,7 @@ from module1_core.Link import Link
 from module2_rip.RIPRouter import RIPRouter
 
 from PyQt5 import QtGui
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -31,7 +32,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("OSPF/RIP Network Emulator")
+        self.setWindowTitle("RIP Network Emulator")
         self.resize(1200, 850)
 
         self.signals = RouterSignal()
@@ -39,6 +40,8 @@ class MainWindow(QMainWindow):
         self.signals.packet_captured.connect(self.update_sniffer_ui)
         self.signals.timer_updated.connect(self.update_timer_display)
         self.signals.packet_sent.connect(self.animate_rip_packet)
+        # self.signals.route_poisoned.connect(self.on_route_poisoned)
+        # self.signals.route_flushed.connect(self.on_route_flushed)
 
         # Module 1
         self.topology_manager = TopologyManager()
@@ -54,6 +57,22 @@ class MainWindow(QMainWindow):
         self.sniffer = PacketSniffer(self.signals)
 
         self.simulation_running = False
+
+        self.convergence_start_time = None
+        self.last_route_change_time = None
+        self.convergence_detected = False
+
+        self.failure_start_time = None
+        self.failure_convergence_detected = False
+        # self.pending_flush_routes = 0
+
+        self.convergence_timer = QTimer()
+        self.convergence_timer.timeout.connect(
+            self.check_convergence
+        )
+        self.convergence_timer.start(1000)
+
+        self.convergence_history = []
 
         self.btn_refresh = QPushButton("Refresh Topology")
         self.btn_add_router = QPushButton("Add Router")
@@ -185,6 +204,13 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(QLabel("RIP Timers (Routes Status & Countdown)"))
         main_layout.addWidget(self.timer_table)
 
+        # Thêm convergence history
+        self.convergence_table = QTableWidget()
+        self.convergence_table.setColumnCount(2)
+        self.convergence_table.setHorizontalHeaderLabels(["Event", "Time (s)"])
+        main_layout.addWidget(QLabel("Convergence History"))
+
+        main_layout.addWidget(self.convergence_table)
         main_layout.addLayout(link_layout)
         main_layout.addLayout(router_layout)
         main_layout.addLayout(button_layout)
@@ -451,6 +477,7 @@ class MainWindow(QMainWindow):
             return
 
         target_link = None
+        link_info = None
 
         for item in self.real_links:
             same = item["source"] == source and item["target"] == target
@@ -458,6 +485,7 @@ class MainWindow(QMainWindow):
 
             if same or reverse:
                 target_link = item["link"]
+                link_info = item
                 break
 
         if target_link is None:
@@ -470,20 +498,25 @@ class MainWindow(QMainWindow):
         if self.is_simulation_running():
 
             if new_status == "DOWN":
+                self.failure_start_time = time.time()
+                self.failure_convergence_detected = False
+
+                self.current_failure_event = f"{source} <-> {target} Down"
+
                 self.rip_routers[source].handle_interface_down(
-                    item["source_interface"].name
+                    link_info["source_interface"].name
                 )
                 self.rip_routers[target].handle_interface_down(
-                    item["target_interface"].name
+                    link_info["target_interface"].name
                 )
 
             else:
                 # Khi bật lại link, cần thông báo cho RIP để nó có thể cập nhật routing table nếu cần
                 self.rip_routers[source].handle_interface_up(
-                    item["source_interface"].name
+                    link_info["source_interface"].name
                 )
                 self.rip_routers[target].handle_interface_up(
-                    item["target_interface"].name
+                    link_info["target_interface"].name
                 )
 
         self.canvas.update_link_status(source, target, new_status)
@@ -505,6 +538,10 @@ class MainWindow(QMainWindow):
         #     return
 
         self.simulation_running = True
+
+        self.convergence_start_time = time.time()
+        self.last_route_change_time = time.time()
+        self.convergence_detected = False
 
         # Khởi động RIP thật
         for router in self.rip_routers.values():
@@ -530,6 +567,9 @@ class MainWindow(QMainWindow):
     def update_routing_table(self, router_id, routing_table):
         # Lưu routing table của router này vào lịch sử
         self.routing_tables_history[router_id] = routing_table
+
+        # Cập nhật thời gian thay đổi route cuối cùng
+        self.last_route_change_time = time.time()
 
         # Hiển thị routing table dựa trên lựa chọn combo_router_view
         self.display_routing_table()
@@ -890,6 +930,7 @@ class MainWindow(QMainWindow):
             next_router = self.find_router_by_interface_ip(next_hop)
 
             if next_router is None:
+                chain.append("NEXT HOP NOT FOUND")
                 break
 
             current_router = next_router
@@ -939,4 +980,145 @@ class MainWindow(QMainWindow):
             self.simulation_running = False
             self.btn_start.setText(
                 "Start Simulation"
+            )
+
+    def check_convergence(self):
+
+        if self.last_route_change_time is None:
+            return
+
+        idle_time = time.time() - self.last_route_change_time
+
+        # 5s không có thay đổi route
+        if (
+            not self.convergence_detected
+            and self.convergence_start_time is not None
+            and idle_time > 5
+        ):
+
+            convergence_time = (
+                self.last_route_change_time
+                - self.convergence_start_time
+            )
+
+            self.convergence_detected = True
+
+            print(
+                f"Convergence Time = "
+                f"{convergence_time:.2f} s"
+            )
+
+            self.add_convergence_record(
+                "Initial Convergence",
+                convergence_time)
+
+        if (
+            self.failure_start_time is not None
+            and not self.failure_convergence_detected
+            and self.network_is_stable()
+        ):
+
+            self.failure_convergence_detected = True
+
+            reconvergence_time = (
+                time.time()
+                - self.failure_start_time
+            )
+
+            print(
+                f"Re-convergence: "
+                f"{reconvergence_time:.2f}s"
+            )
+
+            event = (
+                f"Re-convergence "
+                f"({self.current_failure_event})"
+            )
+            self.add_convergence_record(event, reconvergence_time)
+
+            self.failure_start_time = None
+
+    # def on_route_poisoned(self, count):
+
+    #     self.pending_flush_routes += count
+
+    #     print(
+    #         "Pending Flush:",
+    #         self.pending_flush_routes
+    #     )
+
+    # def on_route_flushed(self, count):
+
+    #     self.pending_flush_routes -= count
+
+    #     print(
+    #         "Pending Flush:",
+    #         self.pending_flush_routes
+    #     )
+
+    # def network_is_stable(self):
+
+    #     for router in self.rip_routers.values():
+
+    #         for route in router.routing_table.values():
+
+    #             if route["metric"] >= 16:
+    #                 return False
+
+    #     return True
+
+    def network_is_stable(self):
+
+        for router in self.rip_routers.values():
+
+            for route in router.routing_table.values():
+
+                # Chỉ xét route RIP
+                if route.get("protocol") != "R":
+                    continue
+
+                # Còn route unreachable
+                if route["metric"] >= 16:
+                    return False
+
+                # Còn hold-down
+                if route.get("hold_down_until", 0) > time.time():
+                    return False
+
+        return True
+
+    def add_convergence_record(
+        self,
+        event,
+        value
+    ):
+
+        self.convergence_history.append(
+            (event, value)
+        )
+
+        self.update_convergence_table()
+
+    def update_convergence_table(self):
+
+        self.convergence_table.setRowCount(
+            len(self.convergence_history)
+        )
+
+        for row, (event, value) in enumerate(
+            self.convergence_history
+        ):
+
+            self.convergence_table.setItem(
+                row,
+                0,
+                QTableWidgetItem(event)
+            )
+
+            self.convergence_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(
+                    f"{value:.2f}"
+                )
             )

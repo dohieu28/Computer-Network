@@ -1,6 +1,7 @@
 import time
 import threading
 import logging
+import random
 from scapy.all import Ether, IP, UDP, RIP, RIPEntry
 from module2_rip.RIPPacketProcessor import RIPPacketProcessor
 from module4_ui.RouterSignal import RouterSignal
@@ -131,8 +132,12 @@ class RIPRouter:
 
     def send_triggered_update(self):
         """Gửi ngay lập tức khi mạng có biến (Không đợi 30s)"""
+        delay = random.uniform(
+            1, 5)  # Delay ngẫu nhiên từ 1-5s để tránh đồng loạt
         logging.info(f"[{self.router_id}] Kích hoạt Triggered Update!")
-        self.send_update_out_all_interfaces()
+        # self.send_update_out_all_interfaces()
+
+        threading.Timer(delay, self.send_update_out_all_interfaces).start()
 
         # Bắn tín hiệu lên GUI (Module 4) ở đây
         # Example: signal_ui_update(self.router_id, self.routing_table)
@@ -147,6 +152,7 @@ class RIPRouter:
        - Để _timer_check_loop() tự FLUSH sau
        """
 
+        # poisoned_count = 0
         route_changed = False
         current_time = time.time()
 
@@ -161,6 +167,7 @@ class RIPRouter:
                 continue
 
             info["metric"] = INFINITY
+            # poisoned_count += 1
             info["timestamp"] = current_time
 
             # Nếu bạn có hold_down_until
@@ -174,6 +181,7 @@ class RIPRouter:
             route_changed = True
 
         if route_changed:
+            # self.signals.route_poisoned.emit(poisoned_count)
             self.send_triggered_update()
 
             self.signals.router_updated.emit(
@@ -356,6 +364,8 @@ class RIPRouter:
                 if dest in self.routing_table:
 
                     del self.routing_table[dest]
+                    # Emit số lượng route bị flush
+                    # self.signals.route_flushed.emit(1)
 
                     logging.warning(
                         f"[{self.router_id}] "

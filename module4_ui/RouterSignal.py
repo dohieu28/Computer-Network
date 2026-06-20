@@ -8,6 +8,9 @@ class RouterSignal(QObject):
     """
     router_updated = pyqtSignal(str, dict)  # router_name, routing_table
 
+    # route_poisoned = pyqtSignal(int)
+    # route_flushed = pyqtSignal(int)
+
     packet_captured = pyqtSignal(dict)  # packet_info
 
     # router_name, {network: {state, time_remaining}}
