@@ -66,6 +66,9 @@ class MainWindow(QMainWindow):
         self.failure_convergence_detected = False
         # self.pending_flush_routes = 0
 
+        self.reconnect_start_time = None
+        self.reconnect_convergence_detected = False
+
         self.convergence_timer = QTimer()
         self.convergence_timer.timeout.connect(
             self.check_convergence
@@ -511,6 +514,10 @@ class MainWindow(QMainWindow):
                 )
 
             else:
+                self.reconnect_start_time = time.time()
+                self.reconnect_convergence_detected = False
+
+                self.current_reconnect_event = f"{source} <-> {target} UP"
                 # Khi bật lại link, cần thông báo cho RIP để nó có thể cập nhật routing table nếu cần
                 self.rip_routers[source].handle_interface_up(
                     link_info["source_interface"].name
@@ -1037,6 +1044,32 @@ class MainWindow(QMainWindow):
             self.add_convergence_record(event, reconvergence_time)
 
             self.failure_start_time = None
+
+        if (
+            self.reconnect_start_time is not None
+            and not self.reconnect_convergence_detected
+            and idle_time > 5
+        ):
+
+            self.reconnect_convergence_detected = True
+
+            reconvergence_time = (
+                self.last_route_change_time
+                - self.reconnect_start_time
+            )
+
+            print(
+                f"Re-convergence after Reconnect: "
+                f"{reconvergence_time:.2f}s"
+            )
+
+            event = (
+                f"Re-convergence after Reconnect "
+                f"({self.current_reconnect_event})"
+            )
+            self.add_convergence_record(event, reconvergence_time)
+
+            self.reconnect_start_time = None
 
     # def on_route_poisoned(self, count):
 

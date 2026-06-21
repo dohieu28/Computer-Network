@@ -189,7 +189,7 @@ class RIPRouter:
                 self.routing_table
             )
 
-    def handle_interface_up(self, interface):
+    def handle_interface_up(self, interface_name):
         """
        Xử lý khi một interface chuyển sang trạng thái UP.
 
@@ -197,8 +197,20 @@ class RIPRouter:
        - Gửi Triggered Update để các router lân cận học lại route.
        """
 
+        interface_obj = None
+
+        for iface in self.interfaces:
+            if iface.name == interface_name:
+                interface_obj = iface
+                break
+
+        if interface_obj is None:
+            logging.error(
+                f"[{self.router_id}] Interface {interface_name} not found.")
+            return
+
         # Tính network từ địa chỉ IP của interface
-        ip_parts = interface.ip.split(".")
+        ip_parts = interface_obj.ip.split(".")
         network = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.0"
 
         current_time = time.time()
@@ -209,7 +221,7 @@ class RIPRouter:
             self.routing_table[network]["protocol"] = "C"
             self.routing_table[network]["metric"] = 0
             self.routing_table[network]["next_hop"] = "DIRECT"
-            self.routing_table[network]["interface"] = interface.name
+            self.routing_table[network]["interface"] = interface_obj.name
             self.routing_table[network]["timestamp"] = current_time
             self.routing_table[network]["hold_down_until"] = 0
 
@@ -218,13 +230,13 @@ class RIPRouter:
                 "protocol": "C",
                 "metric": 0,
                 "next_hop": "DIRECT",
-                "interface": interface.name,
+                "interface": interface_obj.name,
                 "timestamp": current_time,
                 "hold_down_until": 0,
             }
 
         logging.info(
-            f"[{self.router_id}] Direct route {network} restored on {interface.name}"
+            f"[{self.router_id}] Direct route {network} restored on {interface_obj.name}"
         )
 
         # Gửi Triggered Update
