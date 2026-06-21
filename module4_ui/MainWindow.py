@@ -40,8 +40,6 @@ class MainWindow(QMainWindow):
         self.signals.packet_captured.connect(self.update_sniffer_ui)
         self.signals.timer_updated.connect(self.update_timer_display)
         self.signals.packet_sent.connect(self.animate_rip_packet)
-        # self.signals.route_poisoned.connect(self.on_route_poisoned)
-        # self.signals.route_flushed.connect(self.on_route_flushed)
 
         # Module 1
         self.topology_manager = TopologyManager()
@@ -762,6 +760,10 @@ class MainWindow(QMainWindow):
         self.sniffer.captured_packets.clear()
         self.routing_tables_history.clear()
         self.timers_history.clear()
+        self.convergence_history.clear()
+        self.txt_next_hop_chain.clear()
+        self.convergence_table.clearContents()
+        self.toggle_simulation()
 
     def save_topology(self):
         filename, _ = QFileDialog.getSaveFileName(
@@ -1070,35 +1072,6 @@ class MainWindow(QMainWindow):
             self.add_convergence_record(event, reconvergence_time)
 
             self.reconnect_start_time = None
-
-    # def on_route_poisoned(self, count):
-
-    #     self.pending_flush_routes += count
-
-    #     print(
-    #         "Pending Flush:",
-    #         self.pending_flush_routes
-    #     )
-
-    # def on_route_flushed(self, count):
-
-    #     self.pending_flush_routes -= count
-
-    #     print(
-    #         "Pending Flush:",
-    #         self.pending_flush_routes
-    #     )
-
-    # def network_is_stable(self):
-
-    #     for router in self.rip_routers.values():
-
-    #         for route in router.routing_table.values():
-
-    #             if route["metric"] >= 16:
-    #                 return False
-
-    #     return True
 
     def network_is_stable(self):
 
